@@ -1,0 +1,95 @@
+name: Check MTA Bus Time key
+
+# One-off check that the MTA_BUS_API_KEY repository secret works. Prints HTTP
+# status codes and record counts only; the key is never printed (GitHub also
+# masks secrets in logs). Runs only on pushes to this temporary branch, never
+# for pull requests.
+on:
+  push:
+    branches: [check-mta-bus-key]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: uv sync --frozen --no-dev
+
+      - name: Call MTA Bus Time with the key
+        env:
+          MTA_BUS_API_KEY: ${{ secrets.MTA_BUS_API_KEY }}
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os, sys, time
+          import requests
+          from google.transit import gtfs_realtime_pb2
+
+          key = os.environ.get("MTA_BUS_API_KEY", "")
+          if not key:
+              print("RESULT: MTA_BUS_API_KEY is not set as a repository secret")
+              sys.exit(1)
+          print(f"Key present (length {len(key)})")
+          ok = True
+
+          def get(name, url, params):
+              t = time.time()
+              try:
+                  r = requests.get(url, params={**params, "key": key}, timeout=30)
+              except requests.RequestException as exc:
+                  print(f"{name}: request failed ({type(exc).__name__})")
+                  return None
+              ms = (time.time() - t) * 1000
+              print(f"{name}: HTTP {r.status_code}, {len(r.content)} bytes, {ms:.0f} ms")
+              return r
+
+          # 1. SIRI VehicleMonitoring for one route (B63).
+          r = get(
+              "SIRI vehicle-monitoring B63",
+              "https://bustime.mta.info/api/siri/vehicle-monitoring.json",
+              {"version": "2", "LineRef": "MTA NYCT_B63", "VehicleMonitoringDetailLevel": "minimum"},
+          )
+          if r is not None and r.ok:
+              d = r.json()["Siri"]["ServiceDelivery"]
+              if "VehicleMonitoringDelivery" in d:
+                  vm = d["VehicleMonitoringDelivery"][0]
+                  err = vm.get("ErrorCondition")
+                  n = len(vm.get("VehicleActivity", []))
+                  print(f"  vehicles on B63: {n}; error: {err['Description'] if err else 'none'}")
+                  ok &= err is None
+              else:
+                  print(f"  unexpected payload keys: {sorted(d)}")
+                  ok = False
+          else:
+              ok = False
+
+          # 2. GTFS-Realtime feeds (all routes).
+          for name in ("vehiclePositions", "tripUpdates", "alerts"):
+              r = get(f"GTFS-RT {name}", f"https://gtfsrt.prod.obanyc.com/{name}", {})
+              if r is None or not r.ok:
+                  ok = False
+                  continue
+              feed = gtfs_realtime_pb2.FeedMessage()
+              try:
+                  feed.ParseFromString(r.content)
+              except Exception as exc:  # noqa: BLE001
+                  print(f"  not a GTFS-RT payload ({type(exc).__name__})")
+                  ok = False
+                  continue
+              age = time.time() - feed.header.timestamp
+              print(f"  entities: {len(feed.entity)}; header age {age:.0f} s")
+
+          print("RESULT:", "key works" if ok else "key check FAILED")
+          sys.exit(0 if ok else 1)
+          PY
