@@ -17,6 +17,11 @@
     <div class="title">
       <h1>NYC Subway Disruption Ripple</h1>
       <p class="tagline">When the subway breaks down, does the street break down too?</p>
+      <nav aria-label="Pages" class="site-nav">
+        <a href="index.html" aria-current="page">Dashboard</a>
+        <a href="evaluation.html">Evaluation</a>
+        <a href="https://github.com/edwinteng/nyc-transit-ripple">Source code</a>
+      </nav>
     </div>
     <section aria-labelledby="status-heading" class="status">
       <h2 id="status-heading" class="visually-hidden">Data status</h2>
@@ -28,6 +33,11 @@
 
   <main class="layout">
     <section class="panel events-panel" aria-labelledby="events-heading">
+      <section class="notable" aria-labelledby="notable-heading">
+        <h2 id="notable-heading">Notable events</h2>
+        <p class="muted small">Chosen automatically: the highest surface impact among ended events with enough data. One click replays them.</p>
+        <div id="notable-list" class="notable-list"></div>
+      </section>
       <h2 id="events-heading">Delay events <span id="event-count" class="muted"></span></h2>
       <p class="muted small">Events of the last 30 days, ongoing first. Select one to see it on the map and in detail.</p>
       <div id="event-list" class="event-list" role="list"></div>
@@ -66,7 +76,8 @@
       usual level for the same weekday and time of day, and combines them into a 0-100 surface impact
       score. While a disruption is ongoing it ranks the ways to leave each affected station (another
       line, Citi Bike, bus, or waiting, based on how long similar past disruptions lasted) and flags the
-      obvious option when it already looks crowded. The
+      obvious option when it already looks crowded. Any past event can be replayed minute by minute, and
+      the <a href="evaluation.html">Evaluation page</a> reports how well all of this works, with sample sizes. The
       explanations are written by fixed templates and only quote numbers present in the data. Limitations:
       scheduled runs can be delayed, some trips cannot be matched to the schedule, traffic sensors cover
       mainly highways and arterials and are sometimes hours behind, cameras undercount small or dark

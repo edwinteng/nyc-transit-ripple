@@ -1,0 +1,84 @@
+name: Evaluate
+
+# Weekly evaluation report (and on manual dispatch): detection vs. MTA alerts,
+# surface impact placebo test, camera accuracy, recommendation replay,
+# explanation consistency and pipeline reliability over the last 30 days of the
+# data branch. Writes docs/evaluation/latest.md, latest.json and <date>.md and
+# commits them to the default branch; the dashboard's Evaluation page reads
+# latest.json at the next deploy.
+#
+# Security: never runs for pull requests (schedule and manual dispatch only), so
+# no fork code runs with this token. The token can write repository contents
+# (to commit the report) and read Actions run history (workflow reliability);
+# nothing else. No other secret is used. Third-party actions are pinned to SHAs.
+# The job fails if any stored explanation contains a number that is not in its
+# metrics (the report is still committed so the violations can be inspected).
+on:
+  schedule:
+    - cron: "17 7 * * 1" # Mondays 07:17 UTC
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days to evaluate"
+        default: "30"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evaluate
+  cancel-in-progress: false
+
+env:
+  DATA_BRANCH: ${{ vars.RIPPLE_DATA_BRANCH || 'data' }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # commit docs/evaluation to the default branch
+      actions: read # workflow run statistics for the reliability section
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install
+        run: uv sync --frozen --no-dev
+
+      - name: Check out data branch (read-only)
+        run: scripts/data_branch.sh prepare datastore
+
+      - name: Evaluate the last ${{ inputs.days || '30' }} days
+        id: evaluate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DAYS: ${{ inputs.days || '30' }}
+        run: >-
+          uv run --no-sync ripple evaluate --data-dir datastore --days "$DAYS"
+          --out docs/evaluation --check-explanations
+
+      - name: Report summary
+        if: always()
+        run: cat docs/evaluation/latest.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Commit the report
+        if: always() && hashFiles('docs/evaluation/latest.json') != ''
+        run: |
+          git add docs/evaluation
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              -c commit.gpgsign=false \
+              commit --quiet -m "Evaluation report $(date -u +%Y-%m-%d)"
+          git push --quiet origin "HEAD:${DEFAULT_BRANCH}"

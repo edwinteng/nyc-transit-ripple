@@ -29,7 +29,7 @@ MINUTE = pd.Timedelta(minutes=1)
 
 def as_list(value) -> list:
     """List columns come back from DuckDB/pandas as arrays, lists or NULL."""
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    if value is None or value is pd.NA or (isinstance(value, float) and np.isnan(value)):
         return []
     return list(value)
 
