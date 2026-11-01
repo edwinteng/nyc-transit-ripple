@@ -35,6 +35,8 @@ SERIES_FIELDS = {
     "delay_min": "value",
     "traffic_mph": "traffic_speed_mph",
     "traffic_base_mph": "traffic_baseline_mph",
+    "bus_mph": "bus_speed_mph",
+    "bus_base_mph": "bus_baseline_mph",
     "camera_vehicles": "camera_vehicles",
     "camera_vehicles_base": "camera_vehicles_baseline",
     "camera_persons": "camera_persons",
@@ -92,6 +94,7 @@ SOURCE_LABELS = {
     "alerts": "MTA alerts",
     "traffic": "Traffic speed",
     "bike_status": "Citi Bike",
+    "bus": "MTA buses",
     "cameras": "Cameras",
     "baselines": "Baselines",
 }
@@ -126,6 +129,7 @@ def build_status(
         "alerts": settings.alerts_stale_after_s,
         "traffic": settings.traffic_stale_after_s,
         "bike_status": settings.bike_feed_stale_after_s + 600,
+        "bus": settings.bus_stale_after_s + 600,
     }
     latest = con.execute(
         "SELECT source, status, detail, fetched_utc, observed_utc, coverage FROM quality_source "
@@ -137,7 +141,9 @@ def build_status(
         if r is None:
             sources.append(_source(name, "missing", None, None, now, "no data yet"))
             continue
-        if r["status"] in ("outage", "invalid", "empty"):
+        if r["status"] == "unavailable":
+            status = "unavailable"  # e.g. no API key: never shown as normal
+        elif r["status"] in ("outage", "invalid", "empty"):
             status = "missing"
         elif r["status"] == "stale":
             status = "stale"
@@ -315,6 +321,7 @@ def event_summary(ev: dict, stations: dict) -> dict:
         "traffic_change_pct": num(ev.get("traffic_change_pct")),
         "camera_change_pct": num(ev.get("camera_change_pct")),
         "bikes_change_pct": num(ev.get("bikes_change_pct")),
+        "bus_change_pct": num(ev.get("bus_change_pct")),
         "stations": affected,
         "focal_station_ids": as_list(ev.get("focal_station_ids")),
         "alerts": alerts,
@@ -323,6 +330,51 @@ def event_summary(ev: dict, stations: dict) -> dict:
         "computed_utc": iso(ev.get("computed_utc")),
         "detail": f"events/{ev['event_id']}.json",
     }
+
+
+def latest_recommendations(con: duckdb.DuckDBPyConnection, event_ids: list[str]) -> dict:
+    """Latest recommendation set per event: {event_id: {computed_utc, stations: [...]}}."""
+    if not event_ids:
+        return {}
+    df = con.execute(
+        """
+        SELECT * FROM recommendations
+        WHERE list_contains($ids, event_id)
+        QUALIFY computed_utc = max(computed_utc) OVER (PARTITION BY event_id)
+        ORDER BY event_id, station_id, rank
+        """,
+        {"ids": list(event_ids)},
+    ).df()
+    out: dict = {}
+    for (event_id, station_id), g in df.groupby(["event_id", "station_id"], sort=False):
+        entry = out.setdefault(
+            event_id, {"computed_utc": iso(g["computed_utc"].iloc[0]), "stations": []}
+        )
+        entry["stations"].append(
+            {
+                "station_id": station_id,
+                "station_name": g["station_name"].iloc[0],
+                "options": [
+                    {
+                        "rank": int(r["rank"]),
+                        "type": r["option_type"],
+                        "text": r["text"],
+                        "total_min": num(r["est_total_min"]),
+                        "normal_total_min": num(r["normal_total_min"]),
+                        "confidence": r["confidence"],
+                        "is_obvious": bool(r["is_obvious"]),
+                        "crowded": bool(r["crowded"]),
+                        "crowd_reasons": as_list(r["crowd_reasons"]),
+                        "target_name": r["target_name"]
+                        if isinstance(r["target_name"], str)
+                        else None,
+                        "routes": as_list(r["routes"]),
+                    }
+                    for r in g.sort_values("rank").to_dict("records")
+                ],
+            }
+        )
+    return out
 
 
 def downsample(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
@@ -372,6 +424,7 @@ def event_detail(
         "threshold_min": num(ev.get("threshold_min")),
         "series": out_series,
         "nearby": nearby(con, settings, focal, ev, stations),
+        "recommendations": latest_recommendations(con, [ev["event_id"]]).get(ev["event_id"]),
     }
 
 
@@ -526,6 +579,19 @@ def export_site_data(
     index = station_index(con)
     rows = recent_events(con, settings, now_ts).to_dict("records")
     summaries = [event_summary(ev, index) for ev in rows]
+    recs = latest_recommendations(con, [ev["id"] for ev in summaries])
+    for ev in summaries:
+        r = recs.get(ev["id"])
+        top = r["stations"][0]["options"][0] if r and r["stations"] else None
+        ev["top_recommendation"] = (
+            {
+                "text": top["text"],
+                "station_name": r["stations"][0]["station_name"],
+                "computed_utc": r["computed_utc"],
+            }
+            if top
+            else None
+        )
     sizes["status.json"] = _write(
         out_dir / "status.json", build_status(con, settings, now_ts, baselines)
     )

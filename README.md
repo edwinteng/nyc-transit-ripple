@@ -14,11 +14,12 @@ until GitHub Pages is enabled; see [Dashboard on GitHub Pages](#dashboard-on-git
 *The screenshot is taken by the deploy workflow and served with the site; no image
 is committed to this repository.*
 
-**Status: Milestone M4** — public dashboard on GitHub Pages: subway delay events
-with camera counts near the affected stations, a 0-100 surface impact score
-against the usual level for the weekday and time, and plain-English explanations
-written by fixed templates. (M1: subway ingestion and quality checks; M2: events,
-alerts, traffic speed, Citi Bike, baselines; M3: traffic camera counts.)
+**Status: Milestone M5** — MTA bus speeds and a recommendation engine: for every
+affected station of an ongoing disruption, ranked options (another line, Citi Bike,
+bus, or wait) with estimated times, confidence, an "avoid the crowd" check on the
+obvious option, and a plain-English sentence each. (M1: subway ingestion and
+quality checks; M2: events, alerts, traffic speed, Citi Bike, baselines; M3: traffic
+camera counts; M4: public dashboard, event cameras and the surface impact score.)
 
 > **Traffic cameras:** camera frames are turned into counts of cars, buses, trucks
 > and people (numbers only; frames are never stored and there is no face or
@@ -90,6 +91,26 @@ regenerate the screenshot).
 
 ## What it does
 
+### M5: buses and recommendations
+
+- **Bus speeds.** MTA Bus Time SIRI positions of every bus (free key in the
+  `MTA_BUS_API_KEY` secret), one snapshot per subway poll and never more often than
+  every 30 s, turned into speeds per route segment and minute near subway stations,
+  with weekday/time baselines. Bus speed is a fourth signal of the impact score.
+  Without a working key, bus data is marked **unavailable** in the quality report and
+  on the site (never "normal") and everything else keeps working.
+- **Recovery model ("wait").** How long similar past disruptions lasted (median and
+  75th percentile) by line, time of day and alert cause, falling back to broader
+  groups (marked low confidence) when there are fewer than 5 similar events; also the
+  time the street took to return to normal after the subway recovered.
+- **Recommendations.** For each affected station: walk to a working line (next train
+  from live predictions), Citi Bike (bikes now, dropping fast?), bus (current speed vs.
+  usual), or wait, ranked by the estimated time to get 4 km away (there is no
+  destination input yet). If the option most riders would pick looks crowded (buses
+  slowed, bikes running out, cameras counting many more people than usual), it gets a
+  penalty and a flag. Every recommendation is logged with its inputs for later replay
+  evaluation.
+
 ### M4: event cameras, impact score, explanations, dashboard
 
 - **Cameras during events.** For each *ongoing* event (most severe first), the
@@ -100,7 +121,7 @@ regenerate the screenshot).
 - **Surface impact score (0-100)** from (a) the drop of nearby traffic speed, (b)
   the increase of camera counts of vehicles and people and (c) the drop of Citi
   Bike availability, each relative to the same weekday and time of day.
-  Configurable weights (0.4 / 0.3 / 0.3) are renormalized over the signals that
+  Configurable weights (0.4 / 0.3 / 0.3; with buses since M5: 0.3 / 0.3 / 0.2 / 0.2) are renormalized over the signals that
   have data and a reliable baseline, and the signals used are stored with the
   score. Missing everything gives "not enough data", never 0. The time the
   surface recovered is detected from the per-minute score.
@@ -224,6 +245,7 @@ from earlier weeks; until then summaries say that no baseline exists yet.
 | `ripple ingest --replay data/raw/*/*.pb.gz` | Re-process saved subway payloads offline (no network) |
 | `ripple baselines [--force]` | Weekday x time-of-day baselines (skipped if computed in the last 24 h) |
 | `ripple events [--now ISO] [--no-cameras]` | Detect delay events, link alerts, count cameras near ongoing events, score the surface impact, write explanations |
+| `ripple recommend [--now ISO]` | Rank go / switch / wait options for the affected stations of ongoing events and log them |
 | `ripple export [--out site/data]` | Write the dashboard JSON (status, stations, events, one file per event) |
 | `ripple site [--out DIR]` | M2 offline report: PNG charts and `index.html` (default `data/site`) |
 | `ripple neighbors` | Recompute the 500 m spatial join |
@@ -308,6 +330,8 @@ data/
   events/...                                     delay event versions: camera counts, impact
                                                  score and explanation sentences
   camera_counts/...                              cars/buses/trucks/people per camera fetch
+  bus_minute/...                                 bus speed per route segment x minute
+  recommendations/...                            every ranked option per station and run
   reference/                                     stations, links, bike stations, cameras,
                                                  neighbors, camera-station map, baselines
   reports/date=YYYY-MM-DD/<run_id>.json          full quality report per run
@@ -331,6 +355,9 @@ their own host:
 
 - `SOCRATA_APP_TOKEN` (optional, free NYC Open Data app token for higher rate
   limits): sent as `X-App-Token` to `data.cityofnewyork.us` only.
+- `MTA_BUS_API_KEY` (free MTA Bus Time key, needed for bus data): sent as the `key`
+  query parameter to `bustime.mta.info` only; quality reports record URLs without
+  query parameters.
 - `MTA_API_KEY` (optional, not needed today): sent as `x-api-key` to MTA only.
 
 Key settings (all `RIPPLE_<NAME>`): `EVENT_THRESHOLD_MIN` (5), `EVENT_MIN_MINUTES`
@@ -342,7 +369,7 @@ Impact score and cameras (M4; the formula is in
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `IMPACT_WEIGHT_TRAFFIC`, `_CAMERA`, `_BIKES` | 0.4, 0.3, 0.3 | Signal weights, renormalized over usable signals |
+| `IMPACT_WEIGHT_TRAFFIC`, `_BUS`, `_CAMERA`, `_BIKES` | 0.3, 0.3, 0.2, 0.2 | Signal weights, renormalized over usable signals |
 | `IMPACT_TRAFFIC_FULL_DROP_PCT` | 40 | Traffic speed drop vs. usual that scores 100 |
 | `IMPACT_CAMERA_FULL_INCREASE_PCT` | 100 | Camera count increase that scores 100 |
 | `IMPACT_BIKES_FULL_DROP_PCT` | 30 | Citi Bike availability drop that scores 100 |
@@ -351,6 +378,10 @@ Impact score and cameras (M4; the formula is in
 | `EVENT_CAMERAS_ENABLED` | `true` | Count cameras during ongoing events |
 | `EVENT_CAMERA_MAX_PER_RUN` | 30 | Hard cap on cameras counted per run |
 | `EXPORT_WINDOW_DAYS`, `EXPORT_MAX_POINTS` | 30, 120 | Events shown; chart points per series |
+| `REC_REFERENCE_TRIP_KM` | 4 | Options are compared on the time to get this far away |
+| `WALK_SPEED_M_PER_S`, `WALK_DETOUR_FACTOR` | 1.3, 1.3 | Walking time = distance x detour / speed |
+| `REC_CROWD_PENALTY_MIN` | 5 | Added to the obvious option when it looks crowded |
+| `RECOVERY_MIN_EVENTS` | 5 | Similar past events needed before falling back to broader groups |
 
 ## Automation (GitHub Actions)
 
@@ -423,6 +454,23 @@ Tests use synthetic static schedules and GTFS-Realtime payloads (built with the
 same protobuf classes, including the NYCT extension), so they run offline.
 
 ## Known limitations
+
+### M5
+
+- **The bus key must work.** Bus Time currently rejects the configured key ("API key
+  is not authorized"), so bus speeds are unavailable and bus options use usual or
+  assumed speeds (low confidence) until a valid key is stored.
+- **No destination.** Options are compared on the time to get 4 km away from the
+  station; a rider going one stop or across the city may be better served otherwise.
+  Destination-aware routing is future work.
+- **Assumptions where data is missing.** Bus waits are assumed (6 min; no headway
+  model yet), walking uses straight-line distance x 1.3, and ride speeds are typical
+  averages. Each option carries a confidence label and its inputs are logged.
+- **The "wait" estimate needs history.** With fewer than 5 similar past events the
+  estimate falls back to broader groups (low confidence); with no recovered events
+  there is no estimate and "wait" ranks last.
+- **Crowding signals are indirect** (bus slowdown, bike depletion, camera person
+  counts) and need baselines; until then the avoid-the-crowd check rarely fires.
 
 ### M4
 
@@ -515,6 +563,6 @@ same protobuf classes, including the NYCT extension), so they run offline.
 
 ## Roadmap
 
-M5 bus data, recommendation engine · M6 evaluation framework, demo.
+M6 evaluation framework, replay demo, portfolio documentation.
 Explanations are always rule-based and generated in GitHub Actions (no local
 model). See [docs/design.md](docs/design.md).

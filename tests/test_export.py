@@ -19,7 +19,7 @@ from transit_ripple.export import (
 )
 from transit_ripple.storage import connect, read_reference, write_reference, write_table
 
-STATUSES = {"ok", "stale", "degraded", "missing", "on_demand", "building"}
+STATUSES = {"ok", "stale", "degraded", "missing", "on_demand", "building", "unavailable"}
 ISO_RE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
 
 
@@ -137,7 +137,7 @@ def test_events_json_schema(exported):
     assert ev["start_utc"] == "2026-11-30T14:00:00Z" and ev["end_utc"] == "2026-11-30T14:07:00Z"
     assert (ev["impact_score"], ev["impact_label"]) == (62.5, "high")
     assert ev["impact_signals_used"] == ["traffic"]
-    assert set(ev["impact_signals"]) == {"traffic", "camera", "bikes"}
+    assert set(ev["impact_signals"]) == {"traffic", "bus", "camera", "bikes"}
     assert ev["impact_signals"]["bikes"]["status"] == "low_confidence"
     assert ev["impact_signals"]["traffic"]["weight"] == 1.0
     assert ev["stations"][0] == {
@@ -165,6 +165,8 @@ def test_event_detail_series_and_nearby(exported):
         "delay_min",
         "traffic_mph",
         "traffic_base_mph",
+        "bus_mph",
+        "bus_base_mph",
         "camera_vehicles",
         "camera_vehicles_base",
         "camera_persons",
@@ -208,7 +210,15 @@ def test_status_json_marks_every_source(exported, tmp_path):
     status = strict_load(out / "status.json")
     assert status["generated_utc"] == "2026-11-30T14:12:00Z"
     by_name = {s["source"]: s for s in status["sources"]}
-    assert set(by_name) == {"subway", "alerts", "traffic", "bike_status", "cameras", "baselines"}
+    assert set(by_name) == {
+        "subway",
+        "alerts",
+        "traffic",
+        "bike_status",
+        "bus",
+        "cameras",
+        "baselines",
+    }
     assert {s["status"] for s in status["sources"]} <= STATUSES
     for s in status["sources"]:
         assert set(s) == {
@@ -282,3 +292,46 @@ def test_helpers():
         "severe",
         "severe",
     ]
+
+
+def test_recommendations_are_exported_per_station_latest_run_only(tmp_path):
+    from transit_ripple.export import latest_recommendations
+
+    def rec(run, minute, station, rank, text, crowded=False):
+        t = T0 + pd.Timedelta(minutes=minute)
+        return {
+            "bucket_utc": t,
+            "computed_utc": t,
+            "run_id": run,
+            "event_id": "A-1",
+            "event_route_id": "A",
+            "station_id": station,
+            "station_name": {"A41": "Jay St-MetroTech", "A42": "Hoyt St"}[station],
+            "rank": rank,
+            "option_type": "walk_line" if rank == 1 else "wait",
+            "option_id": f"opt{rank}",
+            "est_total_min": 10.0 * rank,
+            "normal_total_min": 9.0,
+            "is_obvious": rank == 1,
+            "crowded": crowded,
+            "crowd_reasons": ["bike_depletion"] if crowded else [],
+            "confidence": "high",
+            "text": text,
+            "routes": ["C"],
+        }
+
+    rows = [
+        rec("r1", 0, "A41", 1, "old"),
+        rec("r2", 5, "A41", 2, "Wait."),
+        rec("r2", 5, "A41", 1, "Switch."),
+        rec("r2", 5, "A42", 1, "Walk.", crowded=True),
+    ]
+    write_table(tmp_path, "recommendations", pd.DataFrame(rows), "r")
+    out = latest_recommendations(connect(tmp_path), ["A-1", "none"])
+    assert set(out) == {"A-1"}
+    entry = out["A-1"]
+    assert entry["computed_utc"] == "2026-11-30T14:05:00Z"
+    a41, a42 = entry["stations"]
+    assert [o["text"] for o in a41["options"]] == ["Switch.", "Wait."]  # ranked, latest run
+    assert a42["options"][0]["crowded"] and a42["options"][0]["crowd_reasons"] == ["bike_depletion"]
+    assert latest_recommendations(connect(tmp_path), []) == {}

@@ -26,7 +26,7 @@ from .config import AGENCY_TIMEZONE
 NUMBER_RE = re.compile(r"(?<![\w.])(?:\d{1,2}:\d{2}|\d+(?:\.\d+)?)(?![\w])")
 QUOTED_RE = re.compile(r'"[^"]*"')
 
-SIGNAL_ORDER = ("traffic", "camera", "bikes")
+SIGNAL_ORDER = ("traffic", "bus", "camera", "bikes")
 
 
 def _local(ts) -> pd.Timestamp:
@@ -115,6 +115,8 @@ def _signal_clause(name: str, pct: float, s: _Sentence) -> str:
     amount = s.cite(f"{name}_change_pct_abs", _num(abs(pct), 0))
     if name == "traffic":
         return f"nearby traffic was {amount}% {'slower' if pct < 0 else 'faster'}"
+    if name == "bus":
+        return f"buses ran {amount}% {'slower' if pct < 0 else 'faster'}"
     if name == "bikes":
         return f"Citi Bike availability was {amount}% {'lower' if pct < 0 else 'higher'}"
     return f"cameras counted {amount}% {'more' if pct >= 0 else 'fewer'} vehicles and people"
@@ -126,6 +128,7 @@ def surface_sentence(event: dict) -> dict:
     used = [n for n in SIGNAL_ORDER if n in _listify(event.get("impact_signals_used"))]
     pct = {
         "traffic": event.get("traffic_change_pct"),
+        "bus": event.get("bus_change_pct"),
         "camera": event.get("camera_change_pct"),
         "bikes": event.get("bikes_change_pct"),
     }
@@ -158,6 +161,9 @@ def surface_sentence(event: dict) -> dict:
     if _present(event.get("traffic_speed_mph")) and int(event.get("traffic_n_links") or 0):
         speed = s.cite("traffic_speed_mph", _num(event["traffic_speed_mph"]))
         observed.append(f"traffic averaged {speed} mph")
+    if _present(event.get("bus_speed_mph")) and int(event.get("bus_n_segments") or 0):
+        bus = s.cite("bus_speed_mph", _num(event["bus_speed_mph"]))
+        observed.append(f"buses averaged {bus} mph")
     if _present(event.get("camera_objects")) and int(event.get("camera_n_cameras") or 0):
         n_cams = s.cite("camera_n_cameras", str(int(event["camera_n_cameras"])))
         objects = s.cite("camera_objects", _num(event["camera_objects"], 0))
@@ -171,7 +177,7 @@ def surface_sentence(event: dict) -> dict:
             "to compare them with usual conditions for this weekday and time."
         )
     else:
-        text = f"No fresh traffic, camera or Citi Bike data was available within {radius} m."
+        text = f"No fresh traffic, bus, camera or Citi Bike data was available within {radius} m."
     return {"text": text, "metrics": s.metrics}
 
 

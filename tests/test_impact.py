@@ -12,7 +12,9 @@ from transit_ripple.impact import (
     surface_recovery,
 )
 
-S = Settings()  # weights traffic 0.4, camera 0.3, bikes 0.3; full: -40%, +100%, -30%
+# Weights traffic 0.4, camera 0.3, bikes 0.3 (bus 0.3 but absent unless given);
+# full changes: traffic -40%, bus -40%, camera +100%, bikes -30%.
+S = Settings(impact_weight_traffic=0.4, impact_weight_camera=0.3, impact_weight_bikes=0.3)
 
 
 def ok(observed, baseline):
@@ -41,7 +43,7 @@ def test_all_signals_weighted_mean():
     )
     assert res.used == ["traffic", "camera", "bikes"]
     assert res.score == pytest.approx(0.4 * 62.5 + 0.3 * 50 + 0.3 * 50, abs=0.05)
-    assert sum(r.effective_weight for r in res.signals.values()) == pytest.approx(1.0)
+    assert sum(r.effective_weight or 0 for r in res.signals.values()) == pytest.approx(1.0)
 
 
 def test_missing_signal_renormalizes_over_the_rest():
@@ -95,7 +97,7 @@ def test_no_usable_signal_gives_none_not_zero():
 
 def test_detail_is_json_friendly():
     detail = impact_score({"traffic": ok(15.0, 20.0)}, S).detail()
-    assert set(detail) == {"traffic", "camera", "bikes"}
+    assert set(detail) == {"traffic", "bus", "camera", "bikes"}
     assert detail["traffic"]["status"] == "used" and detail["traffic"]["effective_weight"] == 1.0
 
 
@@ -125,3 +127,13 @@ def test_surface_recovery_needs_a_full_quiet_run_after_the_peak():
     assert surface_recovery(pd.Series(t), scores, t[0], s) == t[8]
     gaps = pd.Series([80.0] * 5 + [10.0, None, 10.0, None] + [None] * 21)
     assert surface_recovery(pd.Series(t), gaps, t[0], s) is None  # gaps break the run
+
+
+def test_bus_signal_scores_slowdowns_and_renormalizes():
+    assert sub_score("bus", -20.0, S) == 50.0 and sub_score("bus", 10.0, S) == 0.0
+    res = impact_score({"traffic": ok(15.0, 20.0), "bus": ok(6.0, 8.0)}, S)
+    # Both 25% slower -> 62.5 each; weights 0.4 and 0.3 renormalized.
+    assert res.used == ["traffic", "bus"] and res.score == 62.5
+    assert res.signals["bus"].effective_weight == pytest.approx(3 / 7, abs=1e-4)
+    no_key = impact_score({"traffic": ok(15.0, 20.0), "bus": SignalInput(None, None)}, S)
+    assert no_key.signals["bus"].status == "no_data" and no_key.used == ["traffic"]

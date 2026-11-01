@@ -1,13 +1,14 @@
 name: Ingest and analyse
 
 # Every 5 minutes (GitHub may delay scheduled runs):
-#   subway feeds (3 snapshots), service alerts, NYC DOT traffic speed and
-#   Citi Bike status -> quality report -> baselines (at most daily) -> delay
-#   events -> camera counts near ongoing events (capped) -> surface impact score
-#   and rule-based explanations -> data branch.
+#   subway feeds (3 snapshots), bus positions (one snapshot per subway poll),
+#   service alerts, NYC DOT traffic speed and Citi Bike status -> quality report
+#   -> baselines (at most daily) -> delay events -> camera counts near ongoing
+#   events (capped) -> surface impact score and rule-based explanations ->
+#   ranked go / switch / wait options for riders -> data branch.
 # Slower cadences are handled inside the run: Citi Bike station information and
-# GBFS discovery are refreshed daily, the static GTFS every 6 hours, the camera
-# inventory weekly, baselines daily, and compaction/retention once the day has
+# GBFS discovery are refreshed daily, the static GTFS every 6 hours, the bus stop
+# list and the camera inventory weekly, baselines daily, and compaction/retention once the day has
 # rolled over. The "Deploy dashboard" workflow runs after this one and publishes
 # the dashboard to GitHub Pages.
 #
@@ -81,7 +82,7 @@ jobs:
       - name: Check out data branch
         run: scripts/data_branch.sh prepare datastore
 
-      - name: Ingest subway, alerts, traffic speed and Citi Bike
+      - name: Ingest subway, buses, alerts, traffic speed and Citi Bike
         id: ingest
         env:
           POLLS: ${{ inputs.polls || '3' }}
@@ -89,9 +90,12 @@ jobs:
           SAVE_RAW: ${{ inputs.save_raw && '1' || '' }}
           # Optional free NYC Open Data app token (repository secret); never logged.
           SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
+          # Free MTA Bus Time key (repository secret). Without it, or if Bus Time
+          # rejects it, bus data is reported "unavailable" and skipped.
+          MTA_BUS_API_KEY: ${{ secrets.MTA_BUS_API_KEY }}
         run: >-
           uv run --no-sync ripple ingest
-          --sources subway,alerts,traffic,bikes
+          --sources subway,bus,alerts,traffic,bikes
           --polls "$POLLS" --interval "$INTERVAL" ${SAVE_RAW:+--save-raw}
           --report-md "$RUNNER_TEMP/quality-report.md"
 
@@ -112,11 +116,15 @@ jobs:
           RIPPLE_EVENT_CAMERA_MAX_PER_RUN: ${{ vars.RIPPLE_EVENT_CAMERA_MAX_PER_RUN || '30' }}
         run: uv run --no-sync ripple events
 
+      - name: Rank go / switch / wait options for riders at affected stations
+        run: uv run --no-sync ripple recommend
+
       - name: Compact previous days and apply retention
         if: always() && steps.ingest.outcome == 'success'
         run: |
           uv run --no-sync ripple compact
           uv run --no-sync ripple prune --table bike_minute
+          uv run --no-sync ripple prune --table bus_minute
 
       - name: Quality report summary
         if: always()

@@ -336,6 +336,61 @@ SCHEMAS: dict[str, pa.Schema] = {
             ("surface_recovery_status", pa.string()),
             ("surface_checked_until_utc", TS),
             ("explanation", pa.string()),
+            # M5: bus speed near the focal stations.
+            ("bus_n_segments", pa.int32()),
+            ("bus_speed_mph", pa.float64()),
+            ("bus_baseline_mph", pa.float64()),
+            ("bus_change_pct", pa.float64()),
+            ("bus_baseline_confidence", pa.string()),
+        ]
+    ),
+    # M5: bus speed per route segment (ending at stop_id) and minute.
+    "bus_minute": pa.schema(
+        [
+            ("bucket_utc", TS),
+            ("observed_utc", TS),
+            ("fetched_utc", TS),
+            ("run_id", pa.string()),
+            ("segment_id", pa.string()),
+            ("route_id", pa.string()),
+            ("direction_id", pa.int32()),
+            ("stop_id", pa.string()),
+            ("n_samples", pa.int32()),
+            ("n_vehicles", pa.int32()),
+            ("distance_m", pa.float64()),
+            ("duration_s", pa.float64()),
+            ("speed_mph", pa.float64()),
+        ]
+    ),
+    # M5: every recommended option, every run (logged for replay evaluation in M6).
+    "recommendations": pa.schema(
+        [
+            ("bucket_utc", TS),
+            ("computed_utc", TS),
+            ("run_id", pa.string()),
+            ("event_id", pa.string()),
+            ("event_route_id", pa.string()),
+            ("station_id", pa.string()),
+            ("station_name", pa.string()),
+            ("rank", pa.int32()),
+            ("option_type", pa.string()),
+            ("option_id", pa.string()),
+            ("target_id", pa.string()),
+            ("target_name", pa.string()),
+            ("routes", pa.list_(pa.string())),
+            ("est_total_min", pa.float64()),
+            ("est_access_min", pa.float64()),
+            ("est_wait_min", pa.float64()),
+            ("est_ride_min", pa.float64()),
+            ("penalty_min", pa.float64()),
+            ("normal_total_min", pa.float64()),
+            ("is_obvious", pa.bool_()),
+            ("crowded", pa.bool_()),
+            ("crowd_reasons", pa.list_(pa.string())),
+            ("confidence", pa.string()),
+            ("text", pa.string()),
+            ("metrics", pa.string()),
+            ("inputs", pa.string()),
         ]
     ),
 }
@@ -387,6 +442,16 @@ REFERENCE_SCHEMAS: dict[str, pa.Schema] = {
             ("distance_m", pa.float64()),
         ]
     ),
+    # M5: bus stops from the MTA bus static GTFS, with the routes serving each stop.
+    "bus_stops": pa.schema(
+        [
+            ("stop_id", pa.string()),
+            ("stop_name", pa.string()),
+            ("lat", pa.float64()),
+            ("lon", pa.float64()),
+            ("routes", pa.list_(pa.string())),
+        ]
+    ),
     "baselines": pa.schema(
         [
             ("metric", pa.string()),
@@ -429,6 +494,8 @@ DEDUP_KEYS: dict[str, tuple[list[str], str]] = {
     "traffic_minute": (["link_id", "observed_utc"], "fetched_utc, run_id"),
     "bike_minute": (["bucket_utc", "station_id"], "fetched_utc, run_id"),
     "events": (["event_id"], "computed_utc, run_id"),
+    "bus_minute": (["bucket_utc", "segment_id"], "observed_utc, run_id"),
+    "recommendations": (["run_id", "event_id", "station_id", "option_id"], "computed_utc"),
 }
 
 # Row order inside compacted files; entity-first ordering compresses much better.
@@ -436,6 +503,7 @@ SORT_KEYS: dict[str, list[str]] = {
     "bike_minute": ["station_id", "bucket_utc"],
     "traffic_minute": ["link_id", "observed_utc"],
     "station_minute": ["route_id", "station_id", "bucket_utc"],
+    "bus_minute": ["segment_id", "bucket_utc"],
 }
 
 TABLES = tuple(SCHEMAS)

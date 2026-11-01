@@ -58,12 +58,15 @@
       switching to buses, ride-hailing or Citi Bike, and the most obvious alternative can become
       congested in turn. This dashboard tracks that ripple using only free public data: MTA subway
       GTFS-Realtime feeds and service alerts, the MTA static schedule, NYC DOT real-time traffic speeds,
-      NYC DOT traffic camera images, and Citi Bike station status. Every few minutes a GitHub Actions
+      NYC DOT traffic camera images, MTA Bus Time bus positions, and Citi Bike station status. Every few minutes a GitHub Actions
       pipeline computes how late trains are against the schedule; a line has a delay event when its median
       train delay stays at or above 5 minutes for 5 consecutive minutes. For the most affected stations
-      it compares traffic speed, camera counts of vehicles and people (an open-source YOLOX detector that
-      keeps numbers only, never images) and Citi Bike availability within 500 m with the usual level for
-      the same weekday and time of day, and combines them into a 0-100 surface impact score. The
+      it compares traffic speed, bus speed, camera counts of vehicles and people (an open-source YOLOX
+      detector that keeps numbers only, never images) and Citi Bike availability within 500 m with the
+      usual level for the same weekday and time of day, and combines them into a 0-100 surface impact
+      score. While a disruption is ongoing it ranks the ways to leave each affected station (another
+      line, Citi Bike, bus, or waiting, based on how long similar past disruptions lasted) and flags the
+      obvious option when it already looks crowded. The
       explanations are written by fixed templates and only quote numbers present in the data. Limitations:
       scheduled runs can be delayed, some trips cannot be matched to the schedule, traffic sensors cover
       mainly highways and arterials and are sometimes hours behind, cameras undercount small or dark

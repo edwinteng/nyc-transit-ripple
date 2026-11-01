@@ -166,6 +166,29 @@ def cmd_site(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recommend(args: argparse.Namespace) -> int:
+    from .pipeline import make_run_id
+    from .recommend import recommend
+    from .storage import connect, read_reference, write_table
+
+    settings = _settings(args)
+    now = _now(args)
+    con = connect(settings.data_dir)
+    run_id = make_run_id(now.replace(tzinfo=dt.UTC).timestamp())
+    recs = recommend(con, settings, read_reference(settings.data_dir, "baselines"), now, run_id)
+    if recs.empty:
+        print("No ongoing events: no recommendations.")
+        return 0
+    write_table(settings.data_dir, "recommendations", recs, run_id)
+    n_stations = recs.groupby(["event_id", "station_id"]).ngroups
+    print(f"{len(recs)} option(s) for {n_stations} station(s) of ongoing events")
+    for (event_id, station), g in recs.groupby(["event_id", "station_name"], sort=False):
+        top = g.sort_values("rank").iloc[0]
+        flag = " [obvious option flagged as crowded]" if g["crowded"].any() else ""
+        print(f"- {event_id} at {station}: {top['text']}{flag}")
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     from .export import export_site_data
     from .storage import connect, read_reference
@@ -185,7 +208,12 @@ def cmd_prune(args: argparse.Namespace) -> int:
     from .storage import prune
 
     settings = _settings(args)
-    keep = args.keep_days if args.keep_days is not None else settings.bike_retention_days
+    defaults = {"bus_minute": settings.bus_retention_days}
+    keep = (
+        args.keep_days
+        if args.keep_days is not None
+        else defaults.get(args.table, settings.bike_retention_days)
+    )
     removed = prune(settings.data_dir, args.table, keep, _now(args).date())
     print(f"{args.table}: removed {len(removed)} partition(s) older than {keep} days")
     return 0
@@ -321,6 +349,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ep.set_defaults(func=cmd_events)
 
+    rp = sub.add_parser("recommend", help="ranked go / switch / wait options for ongoing events")
+    common(rp)
+    rp.add_argument("--now", help="reference time, ISO (default: now)")
+    rp.set_defaults(func=cmd_recommend)
+
     sp = sub.add_parser("site", help="render event charts and index.html")
     common(sp)
     sp.add_argument("--out", help="output directory (default <data-dir>/site)")
@@ -336,7 +369,11 @@ def build_parser() -> argparse.ArgumentParser:
     pp = sub.add_parser("prune", help="delete old partitions of a large table")
     common(pp)
     pp.add_argument("--table", default="bike_minute")
-    pp.add_argument("--keep-days", type=int, help="default: RIPPLE_BIKE_RETENTION_DAYS")
+    pp.add_argument(
+        "--keep-days",
+        type=int,
+        help="default: RIPPLE_BIKE_RETENTION_DAYS (RIPPLE_BUS_RETENTION_DAYS for bus_minute)",
+    )
     pp.add_argument("--now", help="reference time, ISO (default: now)")
     pp.set_defaults(func=cmd_prune)
     return p

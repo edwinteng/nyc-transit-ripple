@@ -55,6 +55,8 @@ class SourceOutput:
     tables: dict[str, pd.DataFrame] = field(default_factory=dict)
     # name -> (frame, key column) to upsert into reference/<name>.parquet
     references: dict[str, tuple[pd.DataFrame, str]] = field(default_factory=dict)
+    # Set when a source rewrote a reference table itself (the spatial join is redone).
+    references_changed: bool = False
 
 
 def _record(run_id: str, source: str, res: FetchResult) -> q.SourceRecord:
@@ -474,6 +476,148 @@ class BikesSource:
         st["info_ts"] = res.fetched_at
 
 
+# --------------------------------------------------------------------------------------
+# Buses (MTA Bus Time SIRI, M5)
+# --------------------------------------------------------------------------------------
+
+
+class BusSource:
+    """Bus positions from Bus Time SIRI VehicleMonitoring -> segment speeds.
+
+    ``poll()`` takes one snapshot of all buses and is called by the pipeline during
+    each subway poll cycle (about a minute apart), never more often than
+    ``bus_min_request_interval_s``; ``run()`` turns consecutive snapshots into
+    speeds. Without ``MTA_BUS_API_KEY``, or when the key is rejected, nothing is
+    requested again in the run and the source is reported ``unavailable``.
+    """
+
+    name = "bus"
+
+    def __init__(
+        self, settings: Settings, fetch: UrlFetcher, clock: Callable[[], float] = time.time
+    ):
+        self.settings = settings
+        self.fetch = fetch
+        self.clock = clock
+        self.snapshots: list[FetchResult] = []
+        self._last_request: float | None = None
+        self._auth_error: str | None = None
+
+    def poll(self) -> None:
+        s = self.settings
+        if not s.mta_bus_api_key or self._auth_error:
+            return
+        now = self.clock()
+        if (
+            self._last_request is not None
+            and now - self._last_request < s.bus_min_request_interval_s
+        ):
+            return
+        self._last_request = now
+        params = {
+            "key": s.mta_bus_api_key,
+            "version": "2",
+            "VehicleMonitoringDetailLevel": "normal",
+        }
+        res = self.fetch(self.name, s.bus_siri_url, params, None)
+        if res.http_status in (401, 403):
+            self._auth_error = f"API key rejected (HTTP {res.http_status})"
+        self.snapshots.append(res)
+
+    def run(self, run_id: str, state: PipelineState, data_dir) -> SourceOutput:
+        from .bus import (
+            SiriAuthError,
+            SiriError,
+            bus_minute_rows,
+            parse_vehicle_monitoring,
+            refresh_bus_static,
+            speed_samples,
+        )
+
+        s = self.settings
+        st = state.source(self.name)
+        out = SourceOutput()
+        try:  # stop locations are public; refreshed weekly even without a key
+            out.references_changed = refresh_bus_static(s)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Bus static GTFS refresh failed: %s", exc)
+        if not s.mta_bus_api_key:
+            rec = q.SourceRecord(run_id, self.name, s.bus_siri_url, self.clock())
+            rec.status = q.STATUS_UNAVAILABLE
+            rec.detail = "MTA_BUS_API_KEY is not set; bus data skipped"
+            log.warning("Bus data skipped: MTA_BUS_API_KEY is not set")
+            out.records.append(rec)
+            return out
+        if not self.snapshots:
+            self.poll()
+        parsed = []
+        for res in self.snapshots:
+            rec = _record(run_id, self.name, res)
+            rec.gap_min = q.gap_minutes(st.get("last_ok_ts"), res.fetched_at, s.source_gap_min)
+            out.records.append(rec)
+            if res.http_status in (401, 403):
+                rec.status, rec.detail = q.STATUS_UNAVAILABLE, f"API key rejected ({res.error})"
+                continue
+            if not res.ok:
+                rec.status, rec.detail = q.STATUS_OUTAGE, res.error
+                continue
+            try:
+                p = parse_vehicle_monitoring(res.content)
+            except SiriAuthError as exc:
+                rec.status, rec.detail = q.STATUS_UNAVAILABLE, f"API key rejected: {exc}"
+                continue
+            except SiriError as exc:
+                rec.status, rec.detail = q.STATUS_INVALID, str(exc)
+                continue
+            v = p.vehicles
+            rec.n_records = p.n_activities
+            rec.n_invalid = p.n_bad
+            rec.n_valid = rec.n_new = len(v)
+            newest = float(v["recorded_ts"].max()) if len(v) else None
+            rec.observed_ts = newest
+            if newest is None:
+                rec.status, rec.detail = q.STATUS_EMPTY, "no vehicles in the response"
+                continue
+            rec.feed_age_s = round(res.fetched_at - newest, 1)
+            if rec.feed_age_s > s.bus_stale_after_s:
+                rec.status = q.STATUS_STALE
+                rec.detail = f"newest vehicle report {rec.feed_age_s:.0f}s old"
+                continue
+            rec.notes = {"n_routes": int(v["route_id"].nunique())}
+            st["last_ok_ts"] = res.fetched_at
+            parsed.append((res.fetched_at, v, rec))
+        self.snapshots = []
+        if len(parsed) < 2:
+            return out
+        near = _near_bus_stops(data_dir)
+        frames = []
+        for (_, prev, _), (fetched, cur, rec) in zip(parsed, parsed[1:], strict=False):
+            samples = speed_samples(
+                prev, cur, s.bus_min_pair_s, s.bus_max_pair_s, s.bus_max_speed_mph
+            )
+            rec.notes["n_speed_samples"] = len(samples)
+            frames.append(bus_minute_rows(samples, run_id, fetched, near))
+        rows = (
+            pd.concat([f for f in frames if not f.empty], ignore_index=True)
+            if any(not f.empty for f in frames)
+            else pd.DataFrame()
+        )
+        if not rows.empty:
+            out.tables["bus_minute"] = rows
+            parsed[-1][2].coverage = None
+            parsed[-1][2].notes["n_segments"] = int(rows["segment_id"].nunique())
+        return out
+
+
+def _near_bus_stops(data_dir) -> set[str] | None:
+    """Bus stops within the neighbor radius of a subway station (None: not known yet)."""
+    nb = read_reference(data_dir, "station_neighbors")
+    if nb.empty or "neighbor_type" not in nb:
+        return None
+    stops = nb.loc[nb["neighbor_type"] == "bus_stop", "neighbor_id"]
+    return set(stops.astype(str)) if len(stops) else None
+
+
 def build_sources(
     names: list[str],
     settings: Settings,
@@ -481,7 +625,12 @@ def build_sources(
     clock: Callable[[], float] = time.time,
 ) -> list:
     fetch = fetch or HttpUrlFetcher(settings)
-    registry = {"alerts": AlertsSource, "traffic": TrafficSource, "bikes": BikesSource}
+    registry = {
+        "alerts": AlertsSource,
+        "traffic": TrafficSource,
+        "bikes": BikesSource,
+        "bus": BusSource,
+    }
     unknown = [n for n in names if n not in registry]
     if unknown:
         raise ValueError(f"Unknown source(s) {unknown}. Known: subway, {', '.join(registry)}")

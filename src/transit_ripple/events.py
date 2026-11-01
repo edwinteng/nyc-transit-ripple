@@ -441,7 +441,10 @@ def surface_series(
     cams = cameras_near(con, focal_station_ids, settings.neighbor_radius_m)
     cg = _camera_series(con, settings, baselines, cams, start, end)
 
-    for frame in (tg, bg, cg):
+    stops = sorted(nb.loc[nb["neighbor_type"] == "bus_stop", "neighbor_id"].unique())
+    busg, segments = _bus_series(con, settings, baselines, stops, start, end)
+
+    for frame in (tg, bg, cg, busg):
         if not frame.empty:
             out = out.merge(frame.reset_index(), on="minute_utc", how="left")
     for col in SURFACE_COLUMNS:
@@ -450,7 +453,59 @@ def surface_series(
     out.attrs["n_links_nearby"] = len(links)
     out.attrs["n_bike_stations_nearby"] = len(bikes)
     out.attrs["camera_ids"] = cams
+    out.attrs["n_bus_segments_nearby"] = len(segments)
     return out
+
+
+def bus_segments_near(con, stop_ids: list[str], start, end) -> list[str]:
+    """Bus route segments (ending at one of the stops) observed around the window."""
+    if not stop_ids:
+        return []
+    df = con.execute(
+        "SELECT DISTINCT segment_id FROM bus_minute WHERE list_contains($ids, stop_id) "
+        "AND bucket_utc BETWEEN $lo AND $hi ORDER BY segment_id",
+        {
+            "ids": [str(x) for x in stop_ids],
+            "lo": pd.Timestamp(start) - pd.Timedelta(hours=1),
+            "hi": pd.Timestamp(end),
+        },
+    ).df()
+    return df["segment_id"].tolist()
+
+
+def _bus_series(con, settings: Settings, baselines: pd.DataFrame, stops, start, end):
+    """Per minute: average bus speed on segments ending near the stations, with baselines."""
+    segments = bus_segments_near(con, stops, start, end)
+    if not segments:
+        return pd.DataFrame(), segments
+    b = entity_filled(
+        con,
+        "bus_minute",
+        "segment_id",
+        "bucket_utc",
+        ["speed_mph"],
+        segments,
+        start,
+        end,
+        min(settings.surface_fill_max_age_min, 10),
+        where="n_samples > 0",
+    )
+    b = lookup(baselines, "bus_speed_mph", b, settings.baseline_slot_min)
+    b["has_value"] = b["speed_mph"].notna()
+    b["cmp"] = b["has_value"] & b["baseline"].notna()
+    b["ok"] = b["cmp"] & (b["baseline_confidence"] == CONFIDENCE_OK)
+    b["speed_cmp"] = b["speed_mph"].astype(float).where(b["cmp"])
+    b["base_cmp"] = b["baseline"].where(b["cmp"])
+    b["speed_val"] = b["speed_mph"].astype(float)
+    g = b.groupby("minute_utc").agg(
+        bus_speed_mph=("speed_val", "mean"),
+        bus_n_segments=("has_value", "sum"),
+        bus_speed_cmp=("speed_cmp", "mean"),
+        bus_baseline_mph=("base_cmp", "mean"),
+        bus_n_cmp=("cmp", "sum"),
+        bus_n_ok=("ok", "sum"),
+    )
+    return g, segments
 
 
 SURFACE_COLUMNS = (
@@ -477,6 +532,12 @@ SURFACE_COLUMNS = (
     "camera_objects_baseline",
     "camera_n_cmp",
     "camera_n_ok",
+    "bus_speed_mph",
+    "bus_n_segments",
+    "bus_speed_cmp",
+    "bus_baseline_mph",
+    "bus_n_cmp",
+    "bus_n_ok",
 )
 
 
@@ -619,6 +680,19 @@ def summarize_surface(series: pd.DataFrame, start, end) -> dict:
         )
     else:
         out["camera_change_pct"] = None
+    has_bus = (w["bus_n_cmp"].fillna(0) > 0).any()
+    out["bus_n_segments"] = (
+        int(w["bus_n_cmp" if has_bus else "bus_n_segments"].fillna(0).max()) if len(w) else 0
+    )
+    out["bus_speed_mph"] = mean("bus_speed_cmp") if has_bus else mean("bus_speed_mph")
+    out["bus_baseline_mph"] = mean("bus_baseline_mph") if has_bus else None
+    out["bus_baseline_confidence"] = _confidence(w["bus_n_ok"].fillna(0), w["bus_n_cmp"].fillna(0))
+    if out["bus_speed_mph"] is not None and out["bus_baseline_mph"]:
+        out["bus_change_pct"] = round(
+            (out["bus_speed_mph"] - out["bus_baseline_mph"]) / out["bus_baseline_mph"] * 100, 1
+        )
+    else:
+        out["bus_change_pct"] = None
     return out
 
 
@@ -695,6 +769,11 @@ def surface_impact(
             surface["bikes_available"],
             surface["bikes_baseline"],
             surface["bikes_baseline_confidence"],
+        ),
+        "bus": SignalInput(
+            surface["bus_speed_mph"],
+            surface["bus_baseline_mph"],
+            surface["bus_baseline_confidence"],
         ),
     }
     res = impact_score(inputs, settings)

@@ -19,9 +19,12 @@ const DARK_TEXT_ROUTES = new Set(["N", "Q", "R", "W", "L", "G"]);
 const STATUS_TEXT = {
   ok: ["OK", "✓"], degraded: ["Degraded", "!"], stale: ["Stale", "!"],
   missing: ["Missing", "×"], on_demand: ["On demand", "○"], building: ["Building", "○"],
+  unavailable: ["Unavailable", "×"],
 };
+const CONFIDENCE_TEXT = { high: "high confidence", medium: "medium confidence", low: "low confidence", none: "no estimate" };
+const OPTION_TEXT = { walk_line: "Other line", bike: "Citi Bike", bus: "Bus", wait: "Wait" };
 const IMPACT_TEXT = { severe: "severe", high: "high", moderate: "moderate", low: "low", unknown: "not enough data" };
-const SIGNAL_TEXT = { traffic: "Traffic speed", camera: "Camera counts", bikes: "Citi Bike availability" };
+const SIGNAL_TEXT = { traffic: "Traffic speed", bus: "Bus speed", camera: "Camera counts", bikes: "Citi Bike availability" };
 const SIGNAL_STATUS = {
   used: "used", no_data: "no fresh data", no_baseline: "no baseline yet",
   low_confidence: "baseline has too little history", zero_weight: "weight is 0",
@@ -155,6 +158,9 @@ function renderEvents(events) {
         ev.alerts.length ? ` · ${ev.alerts.length} MTA alert(s)` : "",
       ]),
       el("p", { class: "card-summary", text: ev.sentences.map((s) => s.text).join(" ") }),
+      ev.status === "ongoing" && ev.top_recommendation
+        ? el("p", { class: "card-reco" }, [el("strong", { text: "Best option now: " }), ev.top_recommendation.text])
+        : null,
     ]);
     list.append(card);
   }
@@ -294,6 +300,8 @@ function renderDetail(ev, detail) {
     el("tbody", {}, rows),
   ]));
 
+  if (detail.recommendations) box.append(renderRecommendations(ev, detail.recommendations));
+
   if (ev.alerts.length) {
     box.append(el("h4", { text: "Linked MTA alerts" }));
     box.append(el("ul", { class: "alerts" }, ev.alerts.map((a) =>
@@ -310,6 +318,9 @@ function renderDetail(ev, detail) {
     chartBox("Nearby traffic speed (mph)", "Average speed of road links within 500 m, compared with the usual speed for this weekday and time.",
       [line("Observed", s.traffic_mph, "#1d4ed8"), line("Usual", s.traffic_base_mph, "#1d4ed8", true)], labels,
       { empty: "No fresh traffic speed data near these stations." }),
+    chartBox("Nearby bus speed (mph)", "Average speed of buses on route segments ending within 500 m, compared with the usual speed.",
+      [line("Observed", s.bus_mph, "#b45309"), line("Usual", s.bus_base_mph, "#b45309", true)], labels,
+      { empty: "No live bus speed data near these stations." }),
     chartBox("Camera counts", "Vehicles and people counted by cameras within 500 m, compared with usual counts.",
       [line("Vehicles", s.camera_vehicles, "#0f766e"), line("Usual vehicles", s.camera_vehicles_base, "#0f766e", true),
        line("People", s.camera_persons, "#a21caf"), line("Usual people", s.camera_persons_base, "#a21caf", true)], labels,
@@ -322,6 +333,29 @@ function renderDetail(ev, detail) {
       { beginAtZero: true, suggestedMax: 100, empty: "Not enough baseline history yet to compute the impact score." }),
   ]);
   box.append(charts);
+}
+
+function renderRecommendations(ev, recs) {
+  const ongoing = ev.status === "ongoing";
+  const wrap = el("section", { class: "recos", "aria-labelledby": "recos-heading" }, [
+    el("h4", { id: "recos-heading", text: ongoing ? "Options for riders now" : "Last options suggested during this event" }),
+    el("p", { class: "muted small", text:
+      `Computed ${localTime(recs.computed_utc)} ET. Ranked by the estimated time to get ` +
+      "4 km away from the station (no destination is known). The usual pick is the option most " +
+      "riders would take on a normal day; it is penalized when it looks crowded." }),
+  ]);
+  for (const st of recs.stations) {
+    const ol = el("ol", { class: "reco-list" });
+    for (const o of st.options) {
+      const tags = [el("span", { class: "reco-type", text: OPTION_TEXT[o.type] || o.type }),
+        el("span", { class: `reco-conf conf-${o.confidence}`, text: CONFIDENCE_TEXT[o.confidence] || o.confidence })];
+      if (o.is_obvious) tags.push(el("span", { class: "reco-tag", text: "usual pick" }));
+      if (o.crowded) tags.push(el("span", { class: "reco-tag crowded", text: "likely crowded" }));
+      ol.append(el("li", { class: o.crowded ? "crowded" : "" }, [el("div", { class: "reco-tags" }, tags), el("p", { text: o.text })]));
+    }
+    wrap.append(el("h5", { text: `At ${st.station_name}` }), ol);
+  }
+  return wrap;
 }
 
 async function selectEvent(id, fromList) {

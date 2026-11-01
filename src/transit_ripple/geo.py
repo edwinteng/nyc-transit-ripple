@@ -1,4 +1,4 @@
-"""Spatial join: traffic links and Citi Bike stations near each subway station.
+"""Spatial join: traffic links, Citi Bike stations and bus stops near each subway station.
 
 Distances use a local equirectangular projection around New York City, which is
 accurate to well under 1% over a few kilometres.
@@ -140,17 +140,31 @@ def traffic_neighbors(stations: pd.DataFrame, links: pd.DataFrame, radius_m: flo
     return pd.DataFrame(rows, columns=NEIGHBOR_COLUMNS)
 
 
+def bus_stop_neighbors(
+    stations: pd.DataFrame, bus_stops: pd.DataFrame | None, radius_m: float
+) -> pd.DataFrame:
+    """Bus stops within ``radius_m`` of each subway station. Bus speed segments end at
+    a stop, so a segment is "near" a station when its end stop is."""
+    if bus_stops is None or stations.empty or bus_stops.empty:
+        return pd.DataFrame(columns=NEIGHBOR_COLUMNS)
+    renamed = bus_stops.rename(columns={"stop_id": "station_id", "stop_name": "name"})
+    out = bike_neighbors(stations, renamed[["station_id", "name", "lat", "lon"]], radius_m)
+    return out.assign(neighbor_type="bus_stop")
+
+
 def station_neighbors(
     stations: pd.DataFrame,
     traffic_links: pd.DataFrame,
     bike_stations: pd.DataFrame,
     radius_m: float = 500.0,
+    bus_stops: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """All neighbors of all subway stations, nearest first."""
     out = pd.concat(
         [
             traffic_neighbors(stations, traffic_links, radius_m),
             bike_neighbors(stations, bike_stations, radius_m),
+            bus_stop_neighbors(stations, bus_stops, radius_m),
         ],
         ignore_index=True,
     )

@@ -1,4 +1,4 @@
-# Data model, quality rules and analysis (M1-M4)
+# Data model, quality rules and analysis (M1-M5)
 
 This document describes what the pipeline stores, which data quality rules it
 applies and how delay events, baselines and explanations are computed. All
@@ -343,6 +343,7 @@ average observed value and average baseline give one change per signal:
 | Signal | Observed vs. baseline | Sub-score = 100 at | Setting |
 |---|---|---|---|
 | `traffic` | average speed of DOT links within 500 m | 40% slower | `IMPACT_TRAFFIC_FULL_DROP_PCT` |
+| `bus` (M5) | average speed of buses on segments ending within 500 m | 40% slower | `IMPACT_BUS_FULL_DROP_PCT` |
 | `camera` | vehicles + people counted per camera within 500 m | 100% more | `IMPACT_CAMERA_FULL_INCREASE_PCT` |
 | `bikes` | Citi Bikes available within 500 m | 30% fewer | `IMPACT_BIKES_FULL_DROP_PCT` |
 
@@ -352,9 +353,10 @@ sub_score  = clip(100 * change / full_change, 0, 100)   # change in the "worse" 
 score      = sum(w_i * sub_score_i) / sum(w_i)          # over the usable signals only
 ```
 
-Weights `IMPACT_WEIGHT_TRAFFIC` = 0.4, `IMPACT_WEIGHT_CAMERA` = 0.3,
-`IMPACT_WEIGHT_BIKES` = 0.3 (all `RIPPLE_` settings). A change in the "better"
-direction (faster traffic, fewer people, more bikes) gives 0, not a negative
+Weights `IMPACT_WEIGHT_TRAFFIC` = 0.3, `IMPACT_WEIGHT_BUS` = 0.3,
+`IMPACT_WEIGHT_CAMERA` = 0.2, `IMPACT_WEIGHT_BIKES` = 0.2 (all `RIPPLE_` settings;
+M4 used 0.4 / 0.3 / 0.3 before buses existed). A change in the "better"
+direction (faster traffic or buses, fewer people, more bikes) gives 0, not a negative
 score. A signal is **usable** only when it has an observation, a positive
 baseline, a baseline confidence of at least `IMPACT_MIN_CONFIDENCE` (`ok` = at
 least 3 days of history) and a weight above 0; otherwise it is reported with
@@ -366,7 +368,7 @@ Stored per event: `impact_score`, `impact_signals_used` (list) and
 `impact_detail` (JSON: per signal the status, observed value, baseline,
 confidence, change, sub-score, configured and effective weight, plus the rule
 settings). Example: traffic 25% slower (sub-score 62.5), Citi Bikes 15% fewer
-(50) and no camera data gives (0.4 x 62.5 + 0.3 x 50) / 0.7 = 57.1.
+(50) and no bus or camera data gives (0.3 x 62.5 + 0.2 x 50) / 0.5 = 57.5.
 
 The dashboard labels scores as low (< 20), moderate (20-49), high (50-74) and
 severe (75+), always with the number.
@@ -386,6 +388,115 @@ The same formula, applied minute by minute with the signals used for the event
 
 Missing minutes break a recovery run, so data gaps delay recovery rather than
 fake it.
+
+## Buses (M5)
+
+**Source.** MTA Bus Time SIRI `VehicleMonitoring` (all buses in service, one
+request), with the free key from the environment variable `MTA_BUS_API_KEY`
+(sent as the `key` query parameter to `bustime.mta.info` only; reports record the
+URL without parameters). The pipeline takes one snapshot per subway poll cycle,
+never more often than every 30 seconds (`RIPPLE_BUS_MIN_REQUEST_INTERVAL_S`), as
+Bus Time asks. Without a key, or when Bus Time answers 401/403 or "API key is not
+authorized", no further request is made in that run and the `bus` source is
+recorded with status **`unavailable`** (a missing status: never "normal"); the
+dashboard shows "MTA buses: Unavailable".
+
+**Speeds.** For each bus, distance along its route = `CallDistanceAlongRoute -
+DistanceFromCall` (metres, from the next stop). Two snapshots of the same vehicle
+on the same trip, 20-300 s apart, give a speed sample; samples that move backwards,
+exceed 60 mph, or come from buses at a terminal (`layover`, `prevTrip`) are dropped.
+A sample belongs to the **segment** that ends at the bus's next stop
+(`segment_id = route|direction|stop`).
+
+### `bus_minute` (segment x minute)
+
+`bucket_utc`, `observed_utc`, `fetched_utc`, `run_id`, `segment_id`, `route_id`,
+`direction_id`, `stop_id`, `n_samples`, `n_vehicles`, `distance_m`, `duration_s`
+and `speed_mph` = total distance / total time of the samples (a bus that crawled for
+longer weighs more). Only segments ending at a stop within 500 m of a subway station
+are stored; retention `RIPPLE_BUS_RETENTION_DAYS` (35).
+
+### `reference/bus_stops.parquet`
+
+`stop_id`, `stop_name`, `lat`, `lon`, `routes` from the MTA bus static GTFS (one zip
+per borough plus MTA Bus Company, public, no key), refreshed weekly. The spatial join
+adds `neighbor_type = 'bus_stop'` rows to `station_neighbors`; a segment is "near" a
+station when its end stop is.
+
+**Baseline and impact.** `bus_speed_mph` baselines are computed per segment like the
+other metrics. The surface series averages the segments near the focal stations, and
+`bus` is a fourth impact signal (speed drop vs. usual; 100 at a 40% drop,
+`IMPACT_BUS_FULL_DROP_PCT`; weight `IMPACT_WEIGHT_BUS`). Default weights are now
+traffic 0.3, bus 0.3, camera 0.2, bikes 0.2, always renormalized over the usable
+signals. Events store `bus_n_segments`, `bus_speed_mph`, `bus_baseline_mph`,
+`bus_change_pct` and `bus_baseline_confidence`.
+
+## Recovery model (M5)
+
+Past events that ended because service recovered (`end_reason = 'recovered'`, last
+`RECOVERY_HISTORY_DAYS` = 180 days) give duration distributions grouped by:
+
+- line;
+- time-of-day band of the start in New York time: `am_peak` 06-10, `midday` 10-16,
+  `pm_peak` 16-20, `evening` 20-24, `night` 00-06 on weekdays, `weekend`;
+- cause category of the first linked unplanned alert, from keywords in its text
+  (`person_on_tracks`, `signal`, `track_or_switch`, `power`, `mechanical`,
+  `medical`, `police`, `weather`, `crowding`, `other`).
+
+The most specific group with at least `RECOVERY_MIN_EVENTS` (5) events is used:
+line + band + cause, then line + band, line, band, all events. Any fallback, or a
+final group that is still small, makes the estimate `low` confidence; no past
+events gives no estimate. For an event that has lasted `elapsed` minutes, the
+remaining delay is the median (and 75th percentile) of `duration - elapsed` over
+the similar events that lasted longer (at least 3), otherwise what is left of the
+overall quantiles, marked low. **Surface clearing time** (`surface_recovered_utc -
+end_utc`) uses the same grouping.
+
+## Recommendations (M5)
+
+`ripple recommend` runs after `ripple events`. For every ongoing event (computed in
+the last 15 minutes) and each of its focal stations it builds options and ranks them
+by the estimated time to get `REC_REFERENCE_TRIP_KM` (4 km) away from the station,
+because no destination is known: **total = access (walk) + wait + ride**, where
+ride = reference distance / the mode's speed.
+
+| Option | Access | Wait | Ride speed | Confidence |
+|---|---|---|---|---|
+| `walk_line` | `distance x 1.3 / 1.3 m/s` (2 min to change platforms at the same station) | next predicted train after arriving at the platform (GTFS-Realtime, last 10 min of predictions) | 17 mph | high |
+| `bike` | walk to the nearest dock with at least 2 bikes + 1 min to unlock | 0 | 8 mph | high |
+| `bus` | walk to the route's nearest stop | 6 min (assumed; no headway data yet) | current speed on nearby segments, else usual, else 7.5 mph | medium with live speed, else low |
+| `wait` | 0 | remaining delay (recovery model median) | 17 mph | medium / low / none |
+
+Stations within 1.2 km count for `walk_line` only through lines that are not in any
+ongoing event and that have at least one predicted train in the next hour (a line
+with no prediction may not be running, e.g. at night). Premium express buses are
+excluded (`REC_EXCLUDE_BUS_ROUTE_PREFIXES`). At most 2 stations and 2 bus routes are
+kept per affected station. Unknown totals (no recovery history) rank last.
+
+**Avoid the crowd.** The *obvious* option is the non-wait option with the lowest
+total under normal conditions (usual train wait 5 min, usual bus speed, bikes as
+now). If it shows any crowding signal it gets `REC_CROWD_PENALTY_MIN` (5) extra
+minutes and is flagged `crowded`, with `crowd_reasons`:
+
+- `bus_slowdown`: buses on that route at least 25% slower than usual;
+- `bike_depletion`: bikes at the docks within 500 m down at least 30% in 15 minutes;
+- `camera_people`: cameras near the target station (or near the affected station
+  for bike and bus) counting at least 50% more people than usual.
+
+**Text.** Each option has one template sentence, e.g. "Walk 4 min to Borough Hall for
+the 2/4 (next trains in 5 min northbound, 8 min southbound). About 18 min to get 4 km
+away." Every number is stored in `metrics` exactly as printed (same check as event
+explanations).
+
+### `recommendations` (one row per option per station per run)
+
+`bucket_utc`, `computed_utc`, `run_id`, `event_id`, `event_route_id`, `station_id`,
+`station_name`, `rank`, `option_type`, `option_id`, `target_id`, `target_name`,
+`routes`, `est_total_min`, `est_access_min`, `est_wait_min`, `est_ride_min`,
+`penalty_min`, `normal_total_min`, `is_obvious`, `crowded`, `crowd_reasons`,
+`confidence`, `text`, `metrics` (JSON) and `inputs` (JSON: the facts behind the
+estimate, data timestamps and the full `rec_*` rule), so M6 can replay events and
+compare estimates with what happened.
 
 ## Explanations
 
@@ -416,10 +527,10 @@ browser never reads Parquet. Files:
 
 | File | Content |
 |---|---|
-| `status.json` | `generated_utc`, `last_pipeline_run_utc`, and per source (`subway`, `alerts`, `traffic`, `bike_status`, `cameras`, `baselines`): `status` (`ok`, `degraded`, `stale`, `missing`, `on_demand`, `building`), `data_utc`, `checked_utc`, `data_age_min`, `detail` |
+| `status.json` | `generated_utc`, `last_pipeline_run_utc`, and per source (`subway`, `alerts`, `traffic`, `bike_status`, `bus`, `cameras`, `baselines`): `status` (`ok`, `degraded`, `stale`, `missing`, `unavailable`, `on_demand`, `building`), `data_utc`, `checked_utc`, `data_age_min`, `detail` |
 | `stations.json` | every subway station (`id`, `name`, `lat`, `lon`, `routes`) and, if it is affected by an ongoing event or one that ended in the last 24 h, the most severe such `event` (id, route, status, impact score and label, max delay) |
-| `events.json` | events that started in the last `EXPORT_WINDOW_DAYS` (30): times, peak delay, threshold, impact score/label/signals, recovery, affected stations with coordinates, linked alerts, `sentences`, `summary`, and the path of the detail file; plus the event and impact rules |
-| `events/<event_id>.json` | per-minute series from 30 minutes before the event to its recovery window (`t`, `delay_min`, `traffic_mph`, `traffic_base_mph`, `camera_vehicles(_base)`, `camera_persons(_base)`, `bikes(_base)`, `impact`), averaged into at most `EXPORT_MAX_POINTS` (120) points; and `nearby` stations, cameras (with the event's latest counts), Citi Bike stations and road links (simplified to at most about 40 points) |
+| `events.json` | events that started in the last `EXPORT_WINDOW_DAYS` (30): times, peak delay, threshold, impact score/label/signals, recovery, affected stations with coordinates, linked alerts, `sentences`, `summary`, `top_recommendation` (best option of the latest run), and the path of the detail file; plus the event and impact rules |
+| `events/<event_id>.json` | per-minute series from 30 minutes before the event to its recovery window (`t`, `delay_min`, `traffic_mph`, `traffic_base_mph`, `camera_vehicles(_base)`, `camera_persons(_base)`, `bikes(_base)`, `impact`), averaged into at most `EXPORT_MAX_POINTS` (120) points; and `nearby` stations, cameras (with the event's latest counts), Citi Bike stations and road links (simplified to at most about 40 points); `recommendations`: the latest ranked options per station |
 
 Detail files of events that left the window are deleted. A typical export with a
 few events is around 100-150 KB in total. The Pages workflow runs the export from

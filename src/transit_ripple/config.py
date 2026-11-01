@@ -72,9 +72,20 @@ DEFAULT_ALERTS_URL = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/cam
 DEFAULT_TRAFFIC_URL = "https://data.cityofnewyork.us/resource/i4gi-tjb9.json"
 # Official Citi Bike GBFS auto-discovery endpoint.
 DEFAULT_GBFS_URL = "https://gbfs.citibikenyc.com/gbfs/gbfs.json"
+# MTA Bus Time SIRI VehicleMonitoring (M5); needs the free MTA_BUS_API_KEY.
+DEFAULT_BUS_SIRI_URL = "https://bustime.mta.info/api/siri/vehicle-monitoring.json"
+# MTA bus static GTFS, one file per borough plus MTA Bus Company (no key).
+DEFAULT_BUS_STATIC_URLS = ",".join(
+    f"https://rrgtfsfeeds.s3.amazonaws.com/gtfs_{b}.zip"
+    for b in ("b", "bx", "m", "q", "si", "busco")
+)
 
 # Secrets: environment variable name for each secret field. Never logged.
-SECRET_ENV = {"mta_api_key": "MTA_API_KEY", "socrata_app_token": "SOCRATA_APP_TOKEN"}
+SECRET_ENV = {
+    "mta_api_key": "MTA_API_KEY",
+    "socrata_app_token": "SOCRATA_APP_TOKEN",
+    "mta_bus_api_key": "MTA_BUS_API_KEY",
+}
 
 # Settings recorded in every quality report for reproducibility.
 THRESHOLD_FIELDS = (
@@ -94,6 +105,10 @@ THRESHOLD_FIELDS = (
     "bike_feed_stale_after_s",
     "bike_station_stale_after_s",
     "source_gap_min",
+    "bus_min_request_interval_s",
+    "bus_min_pair_s",
+    "bus_max_pair_s",
+    "bus_max_speed_mph",
 )
 
 
@@ -170,6 +185,22 @@ class Settings:
     # Minutes without a successful fetch of a source before it is reported as a gap.
     source_gap_min: int = 15
 
+    # --- buses (M5) ---------------------------------------------------------------------
+    bus_siri_url: str = DEFAULT_BUS_SIRI_URL
+    # Comma separated static GTFS zips for bus stop locations and the routes at each stop.
+    bus_static_urls: str = DEFAULT_BUS_STATIC_URLS
+    bus_static_max_age_hours: float = 168.0
+    # Bus Time asks clients not to poll more often than every 30 seconds per key.
+    bus_min_request_interval_s: float = 30.0
+    # A speed sample needs two positions of the same bus on the same trip this far apart.
+    bus_min_pair_s: float = 20.0
+    bus_max_pair_s: float = 300.0
+    # Faster samples are GPS or distance errors and are dropped.
+    bus_max_speed_mph: float = 60.0
+    # A SIRI response whose newest vehicle report is older than this is stale.
+    bus_stale_after_s: int = 300
+    bus_retention_days: int = 35
+
     # --- spatial join and baselines -------------------------------------------------
     neighbor_radius_m: float = 500.0
     baseline_days: int = 28
@@ -208,13 +239,15 @@ class Settings:
     # Camera counts are forward-filled at most this many minutes (one count per run).
     camera_fill_max_age_min: int = 10
 
-    # --- surface impact score (M4) --------------------------------------------------------
-    # Weights of the three signals; they are renormalized over the signals available.
-    impact_weight_traffic: float = 0.4
-    impact_weight_camera: float = 0.3
-    impact_weight_bikes: float = 0.3
+    # --- surface impact score (M4, bus signal M5) -------------------------------------------
+    # Weights of the signals; they are renormalized over the signals available.
+    impact_weight_traffic: float = 0.3
+    impact_weight_bus: float = 0.3
+    impact_weight_camera: float = 0.2
+    impact_weight_bikes: float = 0.2
     # Change vs. baseline that maps to a sub-score of 100 (linear, clipped to 0-100).
     impact_traffic_full_drop_pct: float = 40.0
+    impact_bus_full_drop_pct: float = 40.0
     impact_camera_full_increase_pct: float = 100.0
     impact_bikes_full_drop_pct: float = 30.0
     # Lowest baseline confidence a signal may have to be used: "ok" or "low".
@@ -225,6 +258,46 @@ class Settings:
     impact_recovery_minutes: int = 10
     # Minutes after the event end that are analysed for recovery.
     impact_recovery_window_min: int = 120
+
+    # --- recovery model ("wait" option, M5) --------------------------------------------------
+    # Past events used to estimate how long a disruption lasts.
+    recovery_history_days: int = 180
+    # Fewer similar past events than this: fall back to a broader group (low confidence).
+    recovery_min_events: int = 5
+
+    # --- recommendations (M5) -----------------------------------------------------------------
+    # No destination is known, so every option is compared on the time to travel a
+    # reference distance away from the affected station (destination-aware routing is
+    # future work).
+    rec_reference_trip_km: float = 4.0
+    walk_speed_m_per_s: float = 1.3
+    # Street distance / straight-line distance.
+    walk_detour_factor: float = 1.3
+    # Stations served by unaffected lines are considered up to this distance.
+    rec_walk_max_m: float = 1200.0
+    # Minimum time to change platforms at the same station.
+    rec_transfer_min: float = 2.0
+    rec_max_walk_options: int = 2
+    rec_max_bus_options: int = 2
+    # Premium-fare express commuter buses are not suggested (comma separated prefixes).
+    rec_exclude_bus_route_prefixes: str = "BXM,BM,QM,SIM,X"
+    # Average speeds for the reference trip (typical NYC values, configurable).
+    rec_subway_speed_mph: float = 17.0
+    rec_bike_speed_mph: float = 8.0
+    rec_bus_default_speed_mph: float = 7.5
+    # Waits assumed when no live arrival data exists.
+    rec_default_train_wait_min: float = 5.0
+    rec_default_bus_wait_min: float = 6.0
+    rec_bike_unlock_min: float = 1.0
+    rec_min_bikes: int = 2
+    # Live data older than this is not used for recommendations.
+    rec_data_max_age_min: float = 15.0
+    # "Avoid the crowd": crowding signals on the most obvious option.
+    rec_crowd_bus_slowdown_pct: float = 25.0
+    rec_crowd_bike_depletion_pct: float = 30.0
+    rec_crowd_bike_window_min: float = 15.0
+    rec_crowd_camera_increase_pct: float = 50.0
+    rec_crowd_penalty_min: float = 5.0
 
     # --- static site and export ---------------------------------------------------------
     site_max_events: int = 30
@@ -240,6 +313,8 @@ class Settings:
     mta_api_key: str | None = field(default=None, repr=False)
     # SOCRATA_APP_TOKEN: optional free NYC Open Data app token (higher rate limits).
     socrata_app_token: str | None = field(default=None, repr=False)
+    # MTA_BUS_API_KEY: free MTA Bus Time key; without it bus data is "unavailable".
+    mta_bus_api_key: str | None = field(default=None, repr=False)
 
     @property
     def resolved_static_dir(self) -> Path:
@@ -256,6 +331,11 @@ class Settings:
     def impact_rule(self) -> dict[str, float | int | str]:
         """The configurable impact score definition, recorded with every event."""
         return {f.name: getattr(self, f.name) for f in fields(self) if f.name.startswith("impact_")}
+
+    def recommendation_rule(self) -> dict[str, float | int | str]:
+        """The configurable recommendation assumptions, stored with every recommendation."""
+        prefixes = ("rec_", "walk_", "recovery_")
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name.startswith(prefixes)}
 
     def event_rule(self) -> dict[str, float | int | str]:
         """The configurable delay event definition, stored with every event."""
