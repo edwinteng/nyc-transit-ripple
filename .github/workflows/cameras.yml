@@ -1,0 +1,155 @@
+name: Cameras
+
+# Camera tasks (M3) run on demand only; there is no schedule yet.
+#   count     - refresh the camera list if older than a week, map cameras to
+#               stations, count cars/buses/trucks/people at up to N cameras
+#   inventory - force-refresh the camera list and the station mapping
+#   benchmark - time the detector on synthetic frames (+ optional live frames)
+#
+# The benchmark job also runs for pull requests that change the camera module, so
+# inference speed is measured on ubuntu-latest for every change. On pull requests
+# it uses synthetic frames only: it never calls the camera API, needs no secrets
+# and has a read-only token (safe for forks). pull_request_target is not used.
+# Outputs are numbers only; no camera image is stored or uploaded.
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "count, inventory or benchmark"
+        type: choice
+        options: [count, inventory, benchmark]
+        default: count
+      model:
+        description: "Detector"
+        type: choice
+        options: [yolox_s, yolox_tiny, yolox_nano]
+        default: yolox_s
+      max_cameras:
+        description: "count: cameras to count (one request per second)"
+        default: "60"
+      live_frames:
+        description: "benchmark: also time this many live frames"
+        default: "10"
+  pull_request:
+    paths:
+      - "src/transit_ripple/cameras/**"
+      - "tests/cameras/**"
+      - ".github/workflows/cameras.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cameras-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RIPPLE_DATA_DIR: camera-data
+  RIPPLE_STATIC_DIR: .cache/static
+  RIPPLE_MODEL_CACHE_DIR: .cache/models
+
+jobs:
+  benchmark:
+    if: github.event_name == 'pull_request' || inputs.task == 'benchmark'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install (with the vision extra)
+        run: uv sync --frozen --no-dev --extra vision
+
+      # Weights are pinned by SHA-256 in model.py, so the cache key follows that file.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/models
+          key: camera-models-${{ hashFiles('src/transit_ripple/cameras/model.py') }}
+
+      - name: Benchmark on synthetic frames
+        env:
+          MODELS: ${{ github.event_name == 'pull_request' && 'yolox_s yolox_tiny yolox_nano' || inputs.model }}
+          LIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.live_frames || '0' }}
+        run: |
+          for m in $MODELS; do
+            uv run --no-sync ripple-cameras benchmark --model "$m" --frames 100 --live "$LIVE" \
+              --json "bench-$m.json" --report-md "bench-$m.md"
+            cat "bench-$m.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: camera-benchmark-${{ github.run_id }}
+          path: bench-*.json
+          retention-days: 30
+
+  cameras:
+    if: github.event_name == 'workflow_dispatch' && inputs.task != 'benchmark'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install (with the vision extra)
+        run: uv sync --frozen --no-dev --extra vision
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/models
+          key: camera-models-${{ hashFiles('src/transit_ripple/cameras/model.py') }}
+
+      - name: Static GTFS cache slot (stations for the mapping)
+        id: slot
+        run: echo "slot=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/static
+          key: camera-static-gtfs-${{ steps.slot.outputs.slot }}
+          restore-keys: camera-static-gtfs-
+
+      - name: Camera inventory (weekly refresh, forced for the inventory task)
+        env:
+          FORCE: ${{ inputs.task == 'inventory' && '--force' || '' }}
+        run: uv run --no-sync ripple-cameras inventory $FORCE
+
+      - name: Map cameras to subway stations (500 m)
+        run: uv run --no-sync ripple-cameras map
+
+      - name: Count cars, buses, trucks and people
+        if: inputs.task == 'count'
+        env:
+          MODEL: ${{ inputs.model }}
+          MAX_CAMERAS: ${{ inputs.max_cameras }}
+        run: >-
+          uv run --no-sync ripple-cameras count --model "$MODEL" --max-cameras "$MAX_CAMERAS"
+          --report-md "$RUNNER_TEMP/camera-report.md"
+
+      - name: Report summary
+        if: always()
+        run: cat "$RUNNER_TEMP/camera-report.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload counts, mapping and report (numbers only)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: camera-data-${{ github.run_id }}
+          path: |
+            camera-data/reference/
+            camera-data/camera_counts/
+            camera-data/reports/
+          retention-days: 30
+          if-no-files-found: warn
