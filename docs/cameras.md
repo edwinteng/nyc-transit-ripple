@@ -125,10 +125,18 @@ uv sync --extra vision
 
 ## Performance
 
-Measured with `ripple-cameras benchmark` (synthetic 352x240 frames; end-to-end =
-JPEG decode + preprocessing + model + post-processing). The pull request lists
-the numbers measured on a GitHub Actions `ubuntu-latest` runner; the camera
-workflow's benchmark job reproduces them.
+Measured with `ripple-cameras benchmark` on a GitHub Actions `ubuntu-latest` runner
+(4 CPUs, Python 3.12, ONNX Runtime 1.31.1), 100 synthetic 352x240 frames each;
+end-to-end = JPEG decode + preprocessing + model + post-processing:
+
+| Model | Input | End-to-end p50 | p95 | Model only p50 |
+|---|---|---|---|---|
+| YOLOX-S (default) | 640x640 | 64.4 ms | 65.4 ms | 61.3 ms |
+| YOLOX-Tiny | 416x416 | 18.7 ms | 19.1 ms | 17.0 ms |
+| YOLOX-Nano | 416x416 | 7.1 ms | 7.2 ms | 5.3 ms |
+
+The camera workflow's `benchmark` job reproduces these numbers (it also runs on
+pull requests that change this module).
 
 Per camera, polite sequential counting takes about
 `max(request interval, fetch + processing)`. With one request per second and
