@@ -1,8 +1,9 @@
-"""GTFS-Realtime protobuf classes with the NYCT subway extension.
+"""GTFS-Realtime protobuf classes with the NYCT subway and MTA alert extensions.
 
 The standard GTFS-Realtime schema comes from ``gtfs-realtime-bindings``. The MTA
 adds an extension (field 1001) carrying the train id, whether a train has been
-assigned to the trip, and scheduled/actual tracks. We register both schemas in a
+assigned to the trip, and scheduled/actual tracks; the service alerts feed adds the
+"Mercury" extension (alert type, created/updated times). We register them in a
 private descriptor pool so the extension is decoded without colliding with any
 other library that might register the same names in the default pool.
 """
@@ -46,6 +47,23 @@ def _nyct_file_proto(base_name: str) -> descriptor_pb2.FileDescriptorProto:
     stu.field.add(name="scheduled_track", number=1, type=f.TYPE_STRING, label=f.LABEL_OPTIONAL)
     stu.field.add(name="actual_track", number=2, type=f.TYPE_STRING, label=f.LABEL_OPTIONAL)
 
+    # MTA "Mercury" extension of service alerts (camsys/subway-alerts feed).
+    merc = fdp.message_type.add(name="MercuryAlert")
+    merc.field.add(name="created_at", number=1, type=f.TYPE_UINT64, label=f.LABEL_OPTIONAL)
+    merc.field.add(name="updated_at", number=2, type=f.TYPE_UINT64, label=f.LABEL_OPTIONAL)
+    merc.field.add(name="alert_type", number=3, type=f.TYPE_STRING, label=f.LABEL_OPTIONAL)
+    merc.field.add(
+        name="display_before_active", number=7, type=f.TYPE_UINT64, label=f.LABEL_OPTIONAL
+    )
+    fdp.extension.add(
+        name="mercury_alert",
+        number=_EXT_NUMBER,
+        type=f.TYPE_MESSAGE,
+        type_name=".transit_realtime.MercuryAlert",
+        extendee=".transit_realtime.Alert",
+        label=f.LABEL_OPTIONAL,
+    )
+
     fdp.extension.add(
         name="nyct_trip_descriptor",
         number=_EXT_NUMBER,
@@ -83,4 +101,6 @@ def schema() -> SimpleNamespace:
         NyctStopTimeUpdate=classes["transit_realtime.NyctStopTimeUpdate"],
         nyct_trip=pool.FindExtensionByName("transit_realtime.nyct_trip_descriptor"),
         nyct_stop=pool.FindExtensionByName("transit_realtime.nyct_stop_time_update"),
+        MercuryAlert=classes["transit_realtime.MercuryAlert"],
+        mercury_alert=pool.FindExtensionByName("transit_realtime.mercury_alert"),
     )

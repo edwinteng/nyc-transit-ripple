@@ -163,3 +163,32 @@ def test_line_minute_filled_forward_fills_with_freshness_and_never_fakes_normal(
     # Older than max_age: missing with NULL metrics.
     assert at(15)["fill_status"] == "missing" and pd.isna(at(15)["delay_mean_min"])
     assert len(df) == 17
+
+
+def test_prune_removes_only_partitions_older_than_retention(tmp_path):
+    from transit_ripple.storage import prune
+
+    for day in ("2026-10-01", "2026-10-20", "2026-11-01"):
+        t = pd.Timestamp(f"{day} 12:00")
+        write_table(
+            tmp_path,
+            "bike_minute",
+            pd.DataFrame(
+                [
+                    {
+                        "bucket_utc": t,
+                        "observed_utc": t,
+                        "fetched_utc": t,
+                        "run_id": "r",
+                        "station_id": "s1",
+                        "bikes_available": 3,
+                    }
+                ]
+            ),
+            "r",
+        )
+    removed = prune(tmp_path, "bike_minute", keep_days=20, today=dt.date(2026, 11, 2))
+    assert removed == ["date=2026-10-01"]
+    left = sorted(p.name for p in (tmp_path / "bike_minute").iterdir())
+    assert left == ["date=2026-10-20", "date=2026-11-01"]
+    assert prune(tmp_path, "missing_table", 20, dt.date(2026, 11, 2)) == []

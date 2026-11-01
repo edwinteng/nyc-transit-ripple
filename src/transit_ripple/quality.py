@@ -336,6 +336,59 @@ def _iso(ts: float | None) -> str | None:
     return dt.datetime.fromtimestamp(ts, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Statuses of non-subway sources reuse the snapshot vocabulary above.
+SOURCE_MISSING_STATUSES = frozenset({STATUS_STALE, STATUS_OUTAGE, STATUS_INVALID, STATUS_EMPTY})
+
+
+@dataclass
+class SourceRecord:
+    """Quality counters for one fetch of a non-subway source (alerts, traffic, bikes).
+
+    ``coverage`` is the share of known entities (links, stations) with fresh data;
+    ``gap_min`` is set when the previous successful fetch is older than the gap
+    threshold, i.e. the time series has a hole.
+    """
+
+    run_id: str
+    source: str
+    url: str
+    fetched_ts: float
+    status: str = STATUS_OK
+    detail: str | None = None
+    http_status: int | None = None
+    fetch_error: str | None = None
+    fetch_elapsed_s: float | None = None
+    n_bytes: int = 0
+    observed_ts: float | None = None
+    feed_age_s: float | None = None
+    n_records: int = 0
+    n_valid: int = 0
+    n_new: int = 0
+    n_stale: int = 0
+    n_invalid: int = 0
+    coverage: float | None = None
+    gap_min: float | None = None
+    notes: dict = field(default_factory=dict)
+
+    @property
+    def is_missing(self) -> bool:
+        return self.status in SOURCE_MISSING_STATUSES
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        if self.coverage is not None:
+            d["coverage"] = round(self.coverage, 4)
+        return d
+
+
+def gap_minutes(last_ok_ts: float | None, now_ts: float, threshold_min: float) -> float | None:
+    """Minutes since the previous successful fetch, if that exceeds the threshold."""
+    if last_ok_ts is None:
+        return None
+    gap = (now_ts - last_ok_ts) / 60.0
+    return round(gap, 1) if gap > threshold_min else None
+
+
 @dataclass
 class RunReport:
     run_id: str
@@ -346,6 +399,7 @@ class RunReport:
     finished_ts: float | None = None
     polls_completed: int = 0
     records: list[FeedPollRecord] = field(default_factory=list)
+    sources: list[SourceRecord] = field(default_factory=list)
     delay_jumps: list[DelayJump] = field(default_factory=list)
     bucket_duplicates_dropped: dict = field(default_factory=dict)
     rows_written: dict = field(default_factory=dict)
@@ -377,15 +431,27 @@ class RunReport:
             )
         if len(self.delay_jumps) > 10:
             out.append(f"... and {len(self.delay_jumps) - 10} more delay jumps")
+        for r in self.sources:
+            if r.is_missing:
+                why = r.detail or r.fetch_error or ""
+                out.append(f"{r.source}: {r.status} ({why}); marked missing")
+            if r.gap_min is not None:
+                out.append(f"{r.source}: gap of {r.gap_min:.0f} min since the previous good fetch")
+            if r.coverage is not None and r.coverage < self.MIN_COVERAGE and not r.is_missing:
+                out.append(f"{r.source}: low coverage {r.coverage:.0%} of known entities fresh")
         return out
 
+    MIN_COVERAGE = 0.5
+
     def overall_status(self) -> str:
-        if not self.records:
+        units = [*self.records, *self.sources]
+        if not units:
             return "failed"
-        missing = sum(r.is_missing for r in self.records)
-        if missing == len(self.records):
+        missing = sum(u.is_missing for u in units)
+        if missing == len(units):
             return "failed"
-        if missing or self.static.get("warning"):
+        gaps = any(r.gap_min is not None for r in self.sources)
+        if missing or gaps or self.static.get("warning"):
             return "degraded"
         return "ok"
 
@@ -425,11 +491,12 @@ class RunReport:
             "issues": self.issues(),
             "delay_jumps": [asdict(j) for j in self.delay_jumps],
             "feeds": [r.to_dict() for r in self.records],
+            "sources": [r.to_dict() for r in self.sources],
         }
 
     def to_markdown(self) -> str:
         lines = [
-            f"## Subway ingestion quality report `{self.run_id}`",
+            f"## Ingestion quality report `{self.run_id}`",
             "",
             f"- Overall status: **{self.overall_status()}**",
             f"- Polls: {self.polls_completed}/{self.polls_requested}",
@@ -464,6 +531,21 @@ class RunReport:
                 f"{total('dropped_implausible_delay')}/"
                 f"{total('dropped_delay_jump_trips')} |"
             )
+        if self.sources:
+            lines += [
+                "",
+                "| Source | Status | Age (s) | Records | Valid | New | Stale | Coverage "
+                "| Gap (min) |",
+                "|---|---|---|---|---|---|---|---|---|",
+            ]
+            for r in self.sources:
+                age = f"{r.feed_age_s:.0f}" if r.feed_age_s is not None else "-"
+                cov = f"{r.coverage:.0%}" if r.coverage is not None else "-"
+                gap = f"{r.gap_min:.0f}" if r.gap_min is not None else "-"
+                lines.append(
+                    f"| {r.source} | {r.status} | {age} | {r.n_records} | {r.n_valid} | "
+                    f"{r.n_new} | {r.n_stale} | {cov} | {gap} |"
+                )
         issues = self.issues()
         lines += ["", "### Issues", ""]
         lines += [f"- {i}" for i in issues] if issues else ["- none"]

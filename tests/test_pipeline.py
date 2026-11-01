@@ -256,3 +256,96 @@ def test_save_raw_and_replay_reproduce_the_same_rows(tmp_path):
     a = live.stop_delays[cols].sort_values(cols).reset_index(drop=True)
     b = replay.stop_delays[cols].sort_values(cols).reset_index(drop=True)
     assert a.equals(b)
+
+
+class FakeSource:
+    def __init__(self, name, output=None, error=None):
+        self.name = name
+        self.output = output
+        self.error = error
+
+    def run(self, run_id, state, data_dir):
+        if self.error:
+            raise self.error
+        state.source(self.name)["ran"] = run_id
+        return self.output
+
+
+def test_sources_are_ingested_after_subway_and_a_failing_source_is_contained(tmp_path):
+    import pandas as pd
+
+    from transit_ripple.sources import SourceOutput
+
+    h = at("09:59:00")
+    t = pd.Timestamp(h, unit="s")
+    bikes = SourceOutput(
+        records=[
+            q.SourceRecord("x", "bike_status", "u", h + 5, n_records=1, n_valid=1, coverage=1.0)
+        ],
+        tables={
+            "bike_minute": pd.DataFrame(
+                [
+                    {
+                        "bucket_utc": t.floor("min"),
+                        "observed_utc": t,
+                        "fetched_utc": t,
+                        "run_id": "x",
+                        "station_id": "s1",
+                        "bikes_available": 3,
+                        "docks_available": 7,
+                        "is_installed": True,
+                        "is_renting": True,
+                        "is_returning": True,
+                        "report_age_s": 10.0,
+                    }
+                ]
+            )
+        },
+        references={
+            "bike_stations": (
+                pd.DataFrame(
+                    [{"station_id": "s1", "name": "Somewhere", "lat": 40.8, "lon": -73.96}]
+                ),
+                "station_id",
+            )
+        },
+    )
+    script = [
+        {
+            "numbered": (build_feed(h, [line_1_trip(delay_s=120, vehicle_ts=h)]), h + 5),
+            "l": (None, h + 5),
+        }
+    ]
+    pipe, _ = make_pipeline(tmp_path, script, h + 5)
+    pipe.sources = [
+        FakeSource("bike_status", bikes),
+        FakeSource("traffic", error=RuntimeError("boom")),
+    ]
+
+    result = pipe.run(polls=1)
+
+    by_source = {r.source: r for r in result.report.sources}
+    assert by_source["bike_status"].status == q.STATUS_OK
+    assert by_source["traffic"].status == q.STATUS_INVALID and "boom" in by_source["traffic"].detail
+    assert result.report.rows_written["bike_minute"] == 1
+    assert result.report.rows_written["quality_source"] == 2
+    assert "| bike_status | ok |" in result.report.to_markdown()
+    con = connect(tmp_path)
+    assert con.execute("SELECT count(*) FROM bike_stations").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM quality_source").fetchone()[0] == 2
+    # Spatial join was refreshed (the synthetic schedule has no coordinates -> empty).
+    assert (tmp_path / "reference" / "station_neighbors.parquet").exists()
+    assert (
+        PipelineState.load(tmp_path / "state.json").sources["bike_status"]["ran"]
+        == result.report.run_id
+    )
+
+
+def test_station_minute_is_written_from_observed_arrivals(tmp_path):
+    h = at("10:01:00")  # the 10:00 train (1 min late) is at 103N: an actual arrival
+    script = [{"numbered": (build_feed(h, [line_1_trip(delay_s=60)]), h + 5), "l": (None, h + 5)}]
+    pipe, _ = make_pipeline(tmp_path, script, h + 5)
+    result = pipe.run(polls=1)
+    sm = result.tables["station_minute"]
+    assert sm["station_id"].tolist() == ["103"] and sm["delay_max_min"].tolist() == [1.0]
+    assert connect(tmp_path).execute("SELECT count(*) FROM station_minute").fetchone()[0] == 1

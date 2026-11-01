@@ -4,9 +4,10 @@
 #   scripts/data_branch.sh prepare <dir>            check out the data branch into <dir>
 #   scripts/data_branch.sh publish <dir> <message>  replace the data branch with <dir>
 #
-# The data branch holds only small aggregates (line_minute/, quality_feed/,
-# state.json). It is published as a single snapshot commit (force-pushed with a
-# lease) so its history does not grow by one commit every five minutes.
+# The data branch holds aggregates, short-retention Citi Bike minutes, events,
+# reference tables, the static site and state.json. It is published as a single
+# snapshot commit (force-pushed with a lease) so its history does not grow by
+# one commit every five minutes.
 # Detailed per-stop data and reports are excluded via the branch's .gitignore
 # and are uploaded as short-lived workflow artifacts instead.
 set -euo pipefail
@@ -57,14 +58,20 @@ EOF
     cat >README.md <<'EOF'
 # Data branch (generated)
 
-Written by the `Ingest subway feeds` workflow. Do not commit here by hand:
+Written by the `Ingest and analyse` workflow. Do not commit here by hand:
 each run replaces this branch with a single snapshot commit.
 
-- `line_minute/date=YYYY-MM-DD/*.parquet`: per route x direction x 1-minute delay aggregates
-- `quality_feed/date=YYYY-MM-DD/*.parquet`: per feed x poll data quality counters
-- `state.json`: dedup / time-jump state carried between runs
+- `line_minute/`, `station_minute/`: subway delays per line / station and minute
+- `alerts/`, `alert_presence/`: MTA service alert versions and when they were in the feed
+- `traffic_minute/`: NYC DOT traffic speed observations per road link
+- `bike_minute/`: Citi Bike bikes and docks per station and minute (kept 35 days)
+- `events/`: subway delay events with rule-based summaries (one row per version)
+- `quality_feed/`, `quality_source/`: data quality counters per run
+- `reference/`: stations, road links, Citi Bike stations, 500 m neighbors, baselines
+- `site/`: static `index.html` and event charts (ready for GitHub Pages)
+- `state.json`: dedup / freshness state carried between runs
 
-Query with DuckDB, e.g. `ripple query --data-dir . "SELECT * FROM line_minute LIMIT 10"`.
+Query with DuckDB, e.g. `ripple query --data-dir . "SELECT * FROM events LIMIT 10"`.
 EOF
     git checkout --quiet --orphan "ripple-snapshot-$$"
     git add -A

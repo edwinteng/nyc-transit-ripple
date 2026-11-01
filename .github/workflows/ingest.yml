@@ -1,20 +1,29 @@
-name: Ingest subway feeds
+name: Ingest and analyse
 
-# Fetch all NYCT subway GTFS-Realtime feeds every 5 minutes (GitHub may delay
-# scheduled runs), compute delays, run quality checks and publish aggregates.
+# Every 5 minutes (GitHub may delay scheduled runs):
+#   subway feeds (3 snapshots), service alerts, NYC DOT traffic speed and
+#   Citi Bike status -> quality report -> baselines (at most daily) -> delay
+#   events with rule-based summaries -> charts + index.html -> data branch.
+# Slower cadences are handled inside the run: Citi Bike station information and
+# GBFS discovery are refreshed daily, the static GTFS every 6 hours, baselines
+# daily, and compaction/retention once the day has rolled over.
+#
+# Security: read-only token by default; only this job can write, and only to the
+# data branch. Third-party actions are pinned to commit SHAs. This workflow never
+# runs for pull requests, so its secret is not exposed to forks.
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       polls:
-        description: "Snapshots per run"
+        description: "Subway snapshots per run"
         default: "3"
       interval:
-        description: "Seconds between snapshots"
+        description: "Seconds between subway snapshots"
         default: "60"
       save_raw:
-        description: "Also upload raw feed payloads as an artifact"
+        description: "Also upload raw subway payloads as an artifact"
         type: boolean
         default: false
 
@@ -38,9 +47,9 @@ jobs:
     permissions:
       contents: write # push aggregates to the data branch
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -52,7 +61,7 @@ jobs:
         id: slot
         run: echo "slot=$(date -u +%Y%m%d)-$(( 10#$(date -u +%H) / 6 ))" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .cache/static
           key: static-gtfs-v1-${{ steps.slot.outputs.slot }}
@@ -61,30 +70,51 @@ jobs:
       - name: Check out data branch
         run: scripts/data_branch.sh prepare datastore
 
-      - name: Ingest
+      - name: Ingest subway, alerts, traffic speed and Citi Bike
+        id: ingest
         env:
           POLLS: ${{ inputs.polls || '3' }}
           INTERVAL: ${{ inputs.interval || '60' }}
           SAVE_RAW: ${{ inputs.save_raw && '1' || '' }}
+          # Optional free NYC Open Data app token (repository secret); never logged.
+          SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
         run: >-
           uv run --no-sync ripple ingest
+          --sources subway,alerts,traffic,bikes
           --polls "$POLLS" --interval "$INTERVAL" ${SAVE_RAW:+--save-raw}
           --report-md "$RUNNER_TEMP/quality-report.md"
 
-      - name: Compact previous days
-        run: uv run --no-sync ripple compact --tables line_minute,quality_feed
+      - name: Baselines (recomputed at most once a day)
+        run: uv run --no-sync ripple baselines
+
+      - name: Detect delay events and write rule-based summaries
+        run: uv run --no-sync ripple events
+
+      - name: Render charts and index.html
+        run: uv run --no-sync ripple site
+
+      - name: Compact previous days and apply retention
+        if: always() && steps.ingest.outcome == 'success'
+        run: |
+          uv run --no-sync ripple compact
+          uv run --no-sync ripple prune --table bike_minute
 
       - name: Quality report summary
         if: always()
         run: cat "$RUNNER_TEMP/quality-report.md" >> "$GITHUB_STEP_SUMMARY" || true
 
-      - name: Publish aggregates to data branch
-        if: github.ref_name == github.event.repository.default_branch && vars.RIPPLE_PUBLISH_DATA != 'false'
+      # Publish whenever ingestion succeeded, so a failing analysis step never
+      # loses data (the job still fails and shows the error).
+      - name: Publish aggregates and site to data branch
+        if: >-
+          always() && steps.ingest.outcome == 'success'
+          && github.ref_name == github.event.repository.default_branch
+          && vars.RIPPLE_PUBLISH_DATA != 'false'
         run: scripts/data_branch.sh publish datastore "Ingest run ${{ github.run_id }}"
 
       - name: Upload per-stop delays and reports (short-term)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ingest-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
