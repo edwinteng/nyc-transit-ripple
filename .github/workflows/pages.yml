@@ -3,8 +3,8 @@ name: Deploy dashboard
 # Builds the static dashboard (site/ + JSON exported from the data branch) and
 # deploys it to GitHub Pages with the official Pages actions.
 #
-# Triggers: after every "Ingest and analyse" run on the default branch, and by
-# hand. One-time setup: Settings -> Pages -> Build and deployment -> Source:
+# Triggers: after every "Ingest and analyse" and "Evaluate" run on the default
+# branch, and by hand. One-time setup: Settings -> Pages -> Build and deployment -> Source:
 # "GitHub Actions".
 #
 # Security: the build job has a read-only token; only the deploy job gets
@@ -14,7 +14,7 @@ name: Deploy dashboard
 # commit SHAs.
 on:
   workflow_run:
-    workflows: ["Ingest and analyse"]
+    workflows: ["Ingest and analyse", "Evaluate"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -67,8 +67,12 @@ jobs:
       - name: Export dashboard JSON (no Parquet is published)
         run: |
           mkdir -p _site
-          cp site/index.html site/style.css site/app.js _site/
+          cp site/*.html site/*.css site/*.js _site/
           uv run --no-sync ripple export --data-dir datastore --out _site/data
+          # The weekly evaluation report (committed by the Evaluate workflow).
+          if [ -f docs/evaluation/latest.json ]; then
+            cp docs/evaluation/latest.json _site/data/evaluation.json
+          fi
 
       # The README shows https://<owner>.github.io/<repo>/screenshot.png. It is
       # generated on request (or if the live site has none) and otherwise copied

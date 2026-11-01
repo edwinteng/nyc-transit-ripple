@@ -30,7 +30,29 @@ const SIGNAL_STATUS = {
   low_confidence: "baseline has too little history", zero_weight: "weight is 0",
 };
 
-const state = { events: [], stations: [], byId: new Map(), selected: null, charts: [], layers: {} };
+const state = { events: [], stations: [], byId: new Map(), selected: null, charts: [], layers: {}, replay: null };
+
+// Chart.js plugin: a vertical line at the replay position (chart.$replayIndex).
+const replayCursor = {
+  id: "replayCursor",
+  afterDatasetsDraw(chart) {
+    const i = chart.$replayIndex;
+    if (i === undefined || i === null) return;
+    const x = chart.scales.x.getPixelForValue(i);
+    const { top, bottom } = chart.chartArea;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.strokeStyle = "#111";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+const DELAY_BANDS = [[20, "severe"], [10, "high"], [5, "moderate"], [-Infinity, "low"]];
 
 // ---------- helpers ----------------------------------------------------------------------
 
@@ -255,6 +277,7 @@ function chartBox(title, description, allDatasets, labels, opts = {}) {
       plugins: { legend: { labels: { boxWidth: 14 } } },
       scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { beginAtZero: opts.beginAtZero ?? false, suggestedMax: opts.suggestedMax } },
     },
+    plugins: [replayCursor],
   });
   state.charts.push(chart);
   return box;
@@ -300,7 +323,9 @@ function renderDetail(ev, detail) {
     el("tbody", {}, rows),
   ]));
 
-  if (detail.recommendations) box.append(renderRecommendations(ev, detail.recommendations));
+  box.append(renderReplayControls(ev, detail));
+  const recoBox = el("div", { id: "replay-recos" });
+  box.append(recoBox);
 
   if (ev.alerts.length) {
     box.append(el("h4", { text: "Linked MTA alerts" }));
@@ -333,12 +358,15 @@ function renderDetail(ev, detail) {
       { beginAtZero: true, suggestedMax: 100, empty: "Not enough baseline history yet to compute the impact score." }),
   ]);
   box.append(charts);
+  setupReplay(ev, detail);
 }
 
-function renderRecommendations(ev, recs) {
+function renderRecommendations(ev, recs, atReplay = false) {
   const ongoing = ev.status === "ongoing";
+  const heading = atReplay ? `Options suggested at ${localTime(recs.computed_utc)} ET`
+    : ongoing ? "Options for riders now" : "Last options suggested during this event";
   const wrap = el("section", { class: "recos", "aria-labelledby": "recos-heading" }, [
-    el("h4", { id: "recos-heading", text: ongoing ? "Options for riders now" : "Last options suggested during this event" }),
+    el("h4", { id: "recos-heading", text: heading }),
     el("p", { class: "muted small", text:
       `Computed ${localTime(recs.computed_utc)} ET. Ranked by the estimated time to get ` +
       "4 km away from the station (no destination is known). The usual pick is the option most " +
@@ -358,6 +386,126 @@ function renderRecommendations(ev, recs) {
   return wrap;
 }
 
+// ---------- replay -------------------------------------------------------------------------
+
+function renderReplayControls(ev, detail) {
+  const n = detail.series.t.length;
+  const wrap = el("div", { class: "replay", role: "group", "aria-labelledby": "replay-heading" }, [
+    el("h4", { id: "replay-heading", text: "Replay this event" }),
+    el("p", { class: "muted small", text:
+      "Move the slider (or press Play) to see the map, the charts and the suggested options " +
+      "change over time. Station pins show the worst observed delay in minutes at that moment." }),
+  ]);
+  if (!n) return wrap;
+  const play = el("button", { type: "button", class: "replay-play", id: "replay-play", "aria-pressed": "false",
+    text: "▶ Play", onclick: () => toggleReplay() });
+  const slider = el("input", { type: "range", id: "replay-slider", min: 0, max: n - 1, value: n - 1, step: 1,
+    "aria-label": "Replay time", oninput: (e) => updateReplay(Number(e.target.value)) });
+  const time = el("output", { id: "replay-time", for: "replay-slider" });
+  wrap.append(el("div", { class: "replay-row" }, [play, slider, time]));
+  return wrap;
+}
+
+function setupReplay(ev, detail) {
+  stopReplay();
+  if (state.layers.replay) state.layers.replay.clearLayers();
+  else state.layers.replay = L.layerGroup().addTo(state.map);
+  state.replay = { ev, detail, timer: null, index: detail.series.t.length - 1 };
+  updateReplay(state.replay.index);
+}
+
+function delayBand(v) {
+  return DELAY_BANDS.find(([min]) => v >= min)[1];
+}
+
+function updateReplay(i) {
+  const r = state.replay;
+  if (!r || !r.detail.series.t.length) return;
+  r.index = i;
+  const t = r.detail.series.t[i];
+  const slider = document.getElementById("replay-slider");
+  if (slider && Number(slider.value) !== i) slider.value = i;
+  const label = `${localDay(t)} ${localTime(t)} ET`;
+  if (slider) slider.setAttribute("aria-valuetext", label);
+  const out = document.getElementById("replay-time");
+  if (out) out.textContent = label;
+  for (const c of state.charts) {
+    c.$replayIndex = i;
+    c.update("none");
+  }
+  // Map: worst observed delay per affected station at this moment (number + color band).
+  const layer = state.layers.replay;
+  layer.clearLayers();
+  for (const st of r.ev.stations) {
+    const series = (r.detail.station_series || {})[st.id];
+    if (!series || st.lat === null) continue;
+    const v = series[i];
+    const known = v !== null && v !== undefined;
+    const txt = known ? String(Math.round(v)) : "–";
+    const band = known ? delayBand(v) : "unknown";
+    const icon = L.divIcon({ className: "", html: `<span class="badge-pin replay-pin impact-${band}">${txt}</span>`,
+      iconSize: [26, 26], iconAnchor: [13, 13] });
+    const desc = known ? `trains up to ${fmt(v)} min late` : "no observation";
+    L.marker([st.lat, st.lon], { icon, title: `${st.name}: ${desc} at ${localTime(t)} ET`, zIndexOffset: 1000 })
+      .bindTooltip(tip(`${st.name}: ${desc} at ${localTime(t)} ET`)).addTo(layer);
+  }
+  // Recommendations in effect at this moment (latest set computed at or before t).
+  const box = document.getElementById("replay-recos");
+  if (!box) return;
+  const history = r.detail.recommendation_history || [];
+  const current = history.filter((h) => h.computed_utc <= t).pop();
+  const last = i === r.detail.series.t.length - 1;
+  if (current) box.replaceChildren(renderRecommendations(r.ev, current, !last));
+  else if (last && r.detail.recommendations) box.replaceChildren(renderRecommendations(r.ev, r.detail.recommendations));
+  else box.replaceChildren(el("p", { class: "muted small", text: history.length
+    ? "No options had been computed yet at this moment."
+    : "No options were computed for this event (they are only made while a disruption is ongoing)." }));
+}
+
+function stopReplay() {
+  if (state.replay && state.replay.timer) clearInterval(state.replay.timer);
+  if (state.replay) state.replay.timer = null;
+  const btn = document.getElementById("replay-play");
+  if (btn) { btn.setAttribute("aria-pressed", "false"); btn.textContent = "▶ Play"; }
+}
+
+function toggleReplay() {
+  const r = state.replay;
+  if (!r) return;
+  if (r.timer) { stopReplay(); return; }
+  const n = r.detail.series.t.length;
+  if (r.index >= n - 1) updateReplay(0);
+  const btn = document.getElementById("replay-play");
+  btn.setAttribute("aria-pressed", "true");
+  btn.textContent = "❚❚ Pause";
+  r.timer = setInterval(() => {
+    if (r.index >= n - 1) { stopReplay(); return; }
+    updateReplay(r.index + 1);
+  }, 400);
+}
+
+function renderNotable(notable) {
+  const box = document.getElementById("notable-list");
+  if (!box) return;
+  box.replaceChildren();
+  const items = notable.map((n) => [n, state.byId.get(n.id)]).filter(([, ev]) => ev);
+  if (!items.length) {
+    box.append(el("p", { class: "muted small", text: "No ended events with enough data yet." }));
+    return;
+  }
+  for (const [n, ev] of items) {
+    const why = n.basis === "impact" && ev.impact_score !== null
+      ? `impact ${Math.round(ev.impact_score)}/100`
+      : `peak delay ${fmt(ev.peak_delay_min)} min for ${fmt(ev.duration_min, 0)} min`;
+    box.append(el("button", { type: "button", class: "notable-card", "data-id": ev.id,
+      onclick: async () => { await selectEvent(ev.id, false); toggleReplay(); } }, [
+      routeBullet(ev.route),
+      el("span", { class: "notable-text" }, [el("strong", { text: `${localDay(ev.start_utc)} ${localTime(ev.start_utc)} ET` }), ` · ${why}`]),
+      el("span", { class: "notable-play", "aria-hidden": "true", text: "▶ Replay" }),
+    ]));
+  }
+}
+
 async function selectEvent(id, fromList) {
   const ev = state.byId.get(id);
   if (!ev) return;
@@ -370,6 +518,7 @@ async function selectEvent(id, fromList) {
     if (card) card.scrollIntoView({ block: "nearest" });
   }
   history.replaceState(null, "", `#event=${encodeURIComponent(id)}`);
+  stopReplay();
   const box = document.getElementById("detail");
   box.replaceChildren(el("p", { class: "muted", text: "Loading event detail…" }));
   try {
@@ -393,12 +542,13 @@ async function main() {
     state.events = events.events;
     state.stations = stations.stations;
     for (const ev of state.events) state.byId.set(ev.id, ev);
-    renderEvents(state.events);
+    renderEvents(state.events.filter((e) => e.in_window !== false));
+    renderNotable(events.notable || []);
     initMap(state.stations);
     const wanted = new URLSearchParams(location.hash.slice(1)).get("event");
     if (wanted && state.byId.has(wanted)) selectEvent(wanted, false);
     else if (state.events.length) {
-      const first = document.querySelector(".event-card");
+      const first = document.querySelector(".event-card") || document.querySelector(".notable-card");
       if (first) selectEvent(first.dataset.id, true);
     }
   } catch (err) {

@@ -377,6 +377,105 @@ def latest_recommendations(con: duckdb.DuckDBPyConnection, event_ids: list[str])
     return out
 
 
+REPLAY_MAX_STATIONS = 8
+REPLAY_MAX_RUNS = 48
+REPLAY_TOP_OPTIONS = 3
+
+
+def _station_series(con, ev: dict, minutes: pd.Series, ds: pd.DataFrame, settings) -> dict:
+    """Worst observed delay per affected station and minute, on the downsampled axis."""
+    ids = as_list(ev.get("affected_station_ids"))[:REPLAY_MAX_STATIONS]
+    if not ids or minutes.empty:
+        return {}
+    df = con.execute(
+        """
+        SELECT station_id, bucket_utc AS minute_utc, max(delay_max_min) AS delay
+        FROM station_minute
+        WHERE route_id = $r AND list_contains($ids, station_id)
+          AND bucket_utc BETWEEN $lo AND $hi
+        GROUP BY ALL
+        """,
+        {"r": ev["route_id"], "ids": ids, "lo": minutes.min(), "hi": minutes.max()},
+    ).df()
+    out = {}
+    grid = pd.DataFrame({"minute_utc": minutes.to_numpy()})
+    for sid in ids:
+        g = grid.merge(df[df["station_id"] == sid], on="minute_utc", how="left")
+        # Observations are sparse (one per train): hold the last value for 10 minutes.
+        g["delay"] = g["delay"].ffill(limit=10)
+        d = downsample(g[["minute_utc", "delay"]], settings.export_max_points)
+        out[sid] = [num(v) for v in d["delay"]]
+    return out
+
+
+def recommendation_history(con, event_id: str) -> list[dict]:
+    """Every recommendation set of an event (top options per station), oldest first."""
+    df = con.execute(
+        "SELECT * FROM recommendations WHERE event_id = $e AND rank <= $k "
+        "ORDER BY computed_utc, station_id, rank",
+        {"e": event_id, "k": REPLAY_TOP_OPTIONS},
+    ).df()
+    if df.empty:
+        return []
+    runs = sorted(df["computed_utc"].unique())
+    if len(runs) > REPLAY_MAX_RUNS:  # keep evenly spaced runs, always the last one
+        idx = np.unique(np.linspace(0, len(runs) - 1, REPLAY_MAX_RUNS).round().astype(int))
+        runs = [runs[i] for i in idx]
+    out = []
+    for t in runs:
+        g = df[df["computed_utc"] == t]
+        out.append(
+            {
+                "computed_utc": iso(t),
+                "stations": [
+                    {
+                        "station_id": sid,
+                        "station_name": sg["station_name"].iloc[0],
+                        "options": [
+                            {
+                                "rank": int(r["rank"]),
+                                "type": r["option_type"],
+                                "text": r["text"],
+                                "total_min": num(r["est_total_min"]),
+                                "confidence": r["confidence"],
+                                "is_obvious": bool(r["is_obvious"]),
+                                "crowded": bool(r["crowded"]),
+                            }
+                            for r in sg.sort_values("rank").to_dict("records")
+                        ],
+                    }
+                    for sid, sg in g.groupby("station_id", sort=False)
+                ],
+            }
+        )
+    return out
+
+
+def notable_events(con, settings, now: pd.Timestamp) -> pd.DataFrame:
+    """Events worth replaying: highest impact score among ended events with enough
+    data; while no event has a score yet, the longest and worst delays instead."""
+    df = con.execute(
+        """
+        SELECT * FROM events
+        WHERE status = 'ended' AND start_utc >= $since AND duration_min >= $min_d
+          AND len(coalesce(focal_station_ids, [])) > 0
+        """,
+        {
+            "since": now - pd.Timedelta(days=settings.notable_history_days),
+            "min_d": settings.notable_min_duration_min,
+        },
+    ).df()
+    if df.empty:
+        return df.assign(notable_basis=[])
+    scored = df[df["impact_score"].notna()].sort_values("impact_score", ascending=False)
+    scored = scored.assign(notable_basis="impact")
+    rest = df[df["impact_score"].isna()].copy()
+    rest["_rank"] = rest["peak_delay_min"].fillna(0) * rest["duration_min"].fillna(0)
+    rest = rest.sort_values("_rank", ascending=False).drop(columns="_rank")
+    rest = rest.assign(notable_basis="delay")
+    return pd.concat([scored, rest]).head(settings.notable_events)
+
+
 def downsample(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
     """Average consecutive minutes into buckets so at most ``max_points`` remain."""
     if len(df) <= max_points or max_points <= 0:
@@ -413,6 +512,7 @@ def event_detail(
             full[c] = np.nan
     ds = downsample(full[cols], settings.export_max_points)
     out_series = {"t": [iso(t) for t in ds["minute_utc"]]}
+    station_series = _station_series(con, ev, full["minute_utc"], ds, settings)
     for key, col in SERIES_FIELDS.items():
         out_series[key] = [num(v) for v in ds[col]]
     return {
@@ -425,6 +525,10 @@ def event_detail(
         "series": out_series,
         "nearby": nearby(con, settings, focal, ev, stations),
         "recommendations": latest_recommendations(con, [ev["event_id"]]).get(ev["event_id"]),
+        # Replay mode: delay per affected station on the same time axis as ``series``,
+        # and every recommendation set computed during the event.
+        "station_series": station_series,
+        "recommendation_history": recommendation_history(con, ev["event_id"]),
     }
 
 
@@ -578,7 +682,14 @@ def export_site_data(
     sizes: dict[str, int] = {}
     index = station_index(con)
     rows = recent_events(con, settings, now_ts).to_dict("records")
+    recent_ids = {ev["event_id"] for ev in rows}
+    notable = notable_events(con, settings, now_ts)
+    basis = dict(zip(notable["event_id"], notable["notable_basis"], strict=True))
+    rows += [ev for ev in notable.to_dict("records") if ev["event_id"] not in recent_ids]
     summaries = [event_summary(ev, index) for ev in rows]
+    for ev in summaries:
+        ev["in_window"] = ev["id"] in recent_ids
+        ev["notable"] = basis.get(ev["id"])
     recs = latest_recommendations(con, [ev["id"] for ev in summaries])
     for ev in summaries:
         r = recs.get(ev["id"])
@@ -596,7 +707,8 @@ def export_site_data(
         out_dir / "status.json", build_status(con, settings, now_ts, baselines)
     )
     sizes["stations.json"] = _write(
-        out_dir / "stations.json", build_stations(index, summaries, now_ts)
+        out_dir / "stations.json",
+        build_stations(index, [e for e in summaries if e["in_window"]], now_ts),
     )
     sizes["events.json"] = _write(
         out_dir / "events.json",
@@ -607,6 +719,10 @@ def export_site_data(
             "impact_rule": settings.impact_rule(),
             "event_rule": settings.event_rule(),
             "events": summaries,
+            "notable": [
+                {"id": eid, "basis": b}
+                for eid, b in zip(notable["event_id"], notable["notable_basis"], strict=True)
+            ],
         },
     )
     keep = set()

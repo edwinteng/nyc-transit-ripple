@@ -1,4 +1,4 @@
-# Data model, quality rules and analysis (M1-M5)
+# Data model, quality rules and analysis (M1-M6)
 
 This document describes what the pipeline stores, which data quality rules it
 applies and how delay events, baselines and explanations are computed. All
@@ -535,6 +535,41 @@ browser never reads Parquet. Files:
 Detail files of events that left the window are deleted. A typical export with a
 few events is around 100-150 KB in total. The Pages workflow runs the export from
 the data branch at deploy time, so the JSON is never committed.
+
+### Replay and notable events (M6)
+
+Each `events/<event_id>.json` also has:
+
+- `station_series`: for up to 8 affected stations, the worst delay observed at the
+  station (any direction of the event's line) on the same time axis as `series`;
+  observations are held for at most 10 minutes;
+- `recommendation_history`: every recommendation set computed during the event
+  (`computed_utc` and the top 3 options per station; at most 48 sets, evenly spaced,
+  always including the last).
+
+`events.json` lists `notable` events: ended events of the last
+`NOTABLE_HISTORY_DAYS` (180) lasting at least `NOTABLE_MIN_DURATION_MIN` (10) with
+affected stations, ranked by impact score (`basis = impact`), then, while few events
+have a score, by peak delay x duration (`basis = delay`). Notable events older than
+the 30-day window are included with `in_window = false` (they are replayable but not
+in the event list).
+
+## Evaluation (M6)
+
+`ripple evaluate` (weekly in the `Evaluate` workflow) writes
+`docs/evaluation/latest.md`, `latest.json` (also served as `data/evaluation.json`)
+and `<date>.md`. Every section has a status (`ok`, `insufficient_data`, `skipped`),
+the date range of the data it used, a summary, and metrics with `value`, `n`, an
+optional 95% interval, and `preliminary = n < EVAL_MIN_SAMPLE` (30).
+
+| Section | Method |
+|---|---|
+| Detection vs. MTA alerts | Ground truth: unplanned alerts, one per line named ("alert-line"), at their creation time (else first seen). An event matches an alert-line of its line created between `EVAL_ALERT_TOLERANCE_MIN` (15) before its start and 15 after its end; one to one, closest first. Precision = matched / events; recall = matched / alert-lines whose line had usable subway data in the 30 minutes after the alert; time to detect = event start - alert time. Unmatched events are listed. |
+| Placebo test | Per ended event and signal (traffic speed, bus speed, Citi Bikes): mean near the focal stations during the event (E) vs. the same entities at the same local time on earlier days of the same kind within 14 days, skipping windows with an event at these stations (A); and vs. up to 10 control stations at least 2 km from any station affected by an active event, each relative to its own matched windows. Differences in %: (a) E/A - 1, (b) E/A - mean(C/C_matched). Mean over events with a percentile bootstrap 95% interval; "significant" only if the interval excludes 0. |
+| Camera accuracy | `docs/evaluation/camera_labels.csv` (manual counts) and `camera_predictions.csv` (model counts) from the M3 labeling workflow: MAE and bias (model - true) per class and model. Skipped without labels. |
+| Recommendation replay | Realized outcomes after each logged option: wait = event end - recommendation time (recovered events only); other line = first train observed (`station_minute`) at the target station after the walk; bus = speed on the route's nearby segments in the next 30 min; bike = bikes at the dock 15 min later. MAE per option type; how often rank 1 beat the obvious option in realized time; whether obvious options flagged as crowded degraded (bus <= usual x (1 - 25%), dock below 2 bikes or nearby bikes down >= 30%, train wait > estimate + 3 min) compared with unflagged ones. |
+| Explanation consistency | Every stored event sentence and recommendation text: each number must be one of its cited metrics. Violations fail the workflow (`--check-explanations`); a randomized test over every template variant runs in CI. |
+| Reliability | Per source: share of usable fetches (uptime), median and 95th percentile data age, gap count; median and longest time between ingest runs; per workflow (GitHub REST API, read-only token): success rate and average duration. |
 
 ## Static site (M2, offline)
 

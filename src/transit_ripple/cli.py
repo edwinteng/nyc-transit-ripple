@@ -189,6 +189,27 @@ def cmd_recommend(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    from .evaluation import build_report, explanation_violations, write_report
+    from .storage import connect
+
+    settings = _settings(args)
+    if args.days:
+        settings = settings.with_overrides(eval_window_days=args.days)
+    con = connect(settings.data_dir)
+    report = build_report(con, settings, _now(args), github=not args.no_github)
+    for s in report["sections"]:
+        print(f"[{s['status']}] {s['title']}: {s['summary']}")
+    if args.out:
+        for path in write_report(report, Path(args.out)):
+            print(f"Wrote {path}")
+    violations = explanation_violations(report)
+    if args.check_explanations and violations:
+        print(f"ERROR: {violations} explanation(s) contain numbers that are not in their metrics")
+        return 1
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     from .export import export_site_data
     from .storage import connect, read_reference
@@ -353,6 +374,21 @@ def build_parser() -> argparse.ArgumentParser:
     common(rp)
     rp.add_argument("--now", help="reference time, ISO (default: now)")
     rp.set_defaults(func=cmd_recommend)
+
+    evp = sub.add_parser("evaluate", help="evaluation report (detection, placebo, replay, ...)")
+    common(evp)
+    evp.add_argument("--now", help="end of the evaluated period, ISO (default: now)")
+    evp.add_argument("--days", type=int, help="length of the period (default 30)")
+    evp.add_argument("--out", help="write latest.md, latest.json and <date>.md here")
+    evp.add_argument(
+        "--check-explanations",
+        action="store_true",
+        help="exit with an error if any explanation has a number not in its metrics",
+    )
+    evp.add_argument(
+        "--no-github", action="store_true", help="skip workflow statistics from the GitHub API"
+    )
+    evp.set_defaults(func=cmd_evaluate)
 
     sp = sub.add_parser("site", help="render event charts and index.html")
     common(sp)

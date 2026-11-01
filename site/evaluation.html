@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'">
+  <title>Evaluation - NYC Subway Disruption Ripple</title>
+  <meta name="description" content="How well does the NYC Subway Disruption Ripple system work? Detection vs. MTA alerts, a placebo test of the surface impact, camera accuracy, recommendation replay and pipeline reliability, with sample sizes.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#eval-main">Skip to the results</a>
+  <header class="site-header">
+    <div class="title">
+      <h1>NYC Subway Disruption Ripple</h1>
+      <p class="tagline">Evaluation: how well does it work, and how sure can we be?</p>
+      <nav aria-label="Pages" class="site-nav">
+        <a href="index.html">Dashboard</a>
+        <a href="evaluation.html" aria-current="page">Evaluation</a>
+        <a href="https://github.com/edwinteng/nyc-transit-ripple">Source code</a>
+      </nav>
+    </div>
+    <p id="eval-period" class="last-update">Loading the latest evaluation&hellip;</p>
+  </header>
+
+  <main id="eval-main" class="eval-main">
+    <section class="panel" aria-labelledby="eval-about-heading">
+      <h2 id="eval-about-heading">How to read this page</h2>
+      <p>
+        The evaluation runs every week in GitHub Actions over the last 30 days of collected data.
+        Every number shows its sample size (<em>n</em>) and the period it covers. Numbers based on
+        fewer than <span id="min-sample">30</span> observations are marked
+        <span class="prelim-badge">preliminary</span>: they can change a lot as data accumulates.
+        Negative or inconclusive results are reported as they are.
+      </p>
+    </section>
+    <div id="eval-sections"></div>
+    <section class="panel" aria-labelledby="eval-limits-heading">
+      <h2 id="eval-limits-heading">Limitations</h2>
+      <ul>
+        <li>MTA service alerts are an imperfect ground truth for disruptions: some delays get no alert, and alerts can be late or stay up after service recovers.</li>
+        <li>The surface data covers what free public feeds cover: traffic sensors mostly on highways and arterials, cameras only during events, and bus speeds only with a working Bus Time key.</li>
+        <li>Baselines need about three weeks of history, so early results rely on few comparable days.</li>
+        <li>Train arrivals are observed at poll times about a minute apart, with longer gaps when GitHub delays scheduled runs, so realized waits are approximate.</li>
+        <li>Differences near disruptions are associations; the placebo test helps rule out chance and city-wide effects but does not prove causation.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js"
+          integrity="sha384-zYPBGXwO4633CABX/5Spf6emCKUJCfoOkhOMYyxMsatqQZPnDblmmOewfjsIVWCM" crossorigin="anonymous"></script>
+  <script src="evaluation.js"></script>
+</body>
+</html>

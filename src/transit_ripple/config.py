@@ -299,6 +299,32 @@ class Settings:
     rec_crowd_camera_increase_pct: float = 50.0
     rec_crowd_penalty_min: float = 5.0
 
+    # --- evaluation (M6) ------------------------------------------------------------------
+    eval_window_days: int = 30
+    # A metric with fewer observations than this is marked preliminary.
+    eval_min_sample: int = 30
+    # An alert matches an event of its line if it appeared within this many minutes
+    # before the event start or before its end.
+    eval_alert_tolerance_min: float = 15.0
+    eval_bootstrap_samples: int = 2000
+    eval_seed: int = 7
+    # Placebo test: matched non-event windows are looked for this many days back...
+    eval_placebo_days_back: int = 14
+    # ...and control stations must be at least this far from every affected station.
+    eval_control_min_distance_m: float = 2000.0
+    eval_control_stations: int = 10
+    # Recommendation replay: how long after a recommendation outcomes are looked for.
+    eval_replay_horizon_min: float = 60.0
+    # A walk_line option "degraded" if the real wait exceeded the estimate by this much.
+    eval_walk_degrade_min: float = 3.0
+    # Camera accuracy: manual labels and model counts (numbers only, no images).
+    eval_camera_labels: str = "docs/evaluation/camera_labels.csv"
+    eval_camera_predictions: str = "docs/evaluation/camera_predictions.csv"
+    # Notable events on the home page.
+    notable_events: int = 4
+    notable_min_duration_min: float = 10.0
+    notable_history_days: int = 180
+
     # --- static site and export ---------------------------------------------------------
     site_max_events: int = 30
     site_chart_padding_min: int = 30
