@@ -509,9 +509,11 @@ def option_text(o: Option, settings, event: dict) -> dict:
                     parts.append(f"{v} min {label}")
             label = "next train in" if len(parts) == 1 else "next trains in"
             text += f" ({label} {', '.join(parts)})"
-        else:
+        elif o.wait_min is not None:
             assumed = s.cite("assumed_wait_min", _num(o.wait_min, 0))
             text += f" (no live arrivals; a {assumed} min wait is assumed)"
+        else:
+            text += " (no live arrivals)"
     elif o.option_type == "bike":
         walk = s.cite("walk_min", _num(f["walk_min"], 0))
         name = s.cite("target_name", o.target_name or "")

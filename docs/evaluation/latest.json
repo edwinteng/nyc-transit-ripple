@@ -1,0 +1,622 @@
+{
+ "date_from": "2026-10-02",
+ "date_to": "2026-11-01",
+ "generated_utc": "2026-11-01T04:35:00Z",
+ "min_sample": 30,
+ "schema_version": 1,
+ "sections": [
+  {
+   "date_from": "2026-11-01",
+   "date_to": "2026-11-01",
+   "key": "detection",
+   "metrics": [
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "precision",
+     "label": "Precision (events matching an alert)",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 0.333
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "recall",
+     "label": "Recall (alerts with a matching event)",
+     "n": 4,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 0.5
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "ttd_median",
+     "label": "Median time to detect (event start - alert time)",
+     "n": 2,
+     "note": "negative: the event was detected before the alert appeared",
+     "preliminary": true,
+     "unit": "min",
+     "value": 3.9
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "ttd_mean",
+     "label": "Mean time to detect",
+     "n": 2,
+     "note": null,
+     "preliminary": true,
+     "unit": "min",
+     "value": 3.9
+    }
+   ],
+   "notes": [
+    "MTA alerts are an imperfect ground truth: planned work is sometimes posted as delays, short delays often get no alert, alerts can be posted late or kept after service recovered, and they name lines that were only indirectly affected.",
+    "An alert matches an event of the same line if it appeared between 15 min before the event start and 15 min after its end; one to one.",
+    "Unmatched events are listed for manual review: they may be real delays without an alert, or false detections.",
+    "50 alert-line(s) were left out of recall because no subway data was collected for that line in the 30 minutes after the alert (pipeline not running)."
+   ],
+   "status": "ok",
+   "summary": "2 of 6 detected events matched an unplanned MTA alert (precision 33%), and 2 of 4 alert-lines had a matching event (recall 50%). Median time to detect: +3.9 min.",
+   "tables": {
+    "per_line": [
+     {
+      "alerts": 1,
+      "events": 1,
+      "line": "1",
+      "matched": 1,
+      "precision": 1.0,
+      "recall": 1.0,
+      "ttd_median_min": 8.6
+     },
+     {
+      "alerts": 0,
+      "events": 1,
+      "line": "3",
+      "matched": 0,
+      "precision": 0.0,
+      "recall": null,
+      "ttd_median_min": null
+     },
+     {
+      "alerts": 1,
+      "events": 1,
+      "line": "A",
+      "matched": 0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "ttd_median_min": null
+     },
+     {
+      "alerts": 0,
+      "events": 1,
+      "line": "C",
+      "matched": 0,
+      "precision": 0.0,
+      "recall": null,
+      "ttd_median_min": null
+     },
+     {
+      "alerts": 0,
+      "events": 1,
+      "line": "E",
+      "matched": 0,
+      "precision": 0.0,
+      "recall": null,
+      "ttd_median_min": null
+     },
+     {
+      "alerts": 2,
+      "events": 1,
+      "line": "N",
+      "matched": 1,
+      "precision": 1.0,
+      "recall": 0.5,
+      "ttd_median_min": -0.8
+     }
+    ],
+    "unmatched_events": [
+     {
+      "duration_min": 8.0,
+      "event_id": "E-20261101T0248Z",
+      "line": "E",
+      "peak_delay_min": 9.15,
+      "start_utc": "2026-11-01 02:48"
+     },
+     {
+      "duration_min": 8.0,
+      "event_id": "A-20261101T0248Z",
+      "line": "A",
+      "peak_delay_min": 13.37,
+      "start_utc": "2026-11-01 02:48"
+     },
+     {
+      "duration_min": 8.0,
+      "event_id": "C-20261101T0248Z",
+      "line": "C",
+      "peak_delay_min": 19.22,
+      "start_utc": "2026-11-01 02:48"
+     },
+     {
+      "duration_min": 8.0,
+      "event_id": "3-20261101T0248Z",
+      "line": "3",
+      "peak_delay_min": 6.3,
+      "start_utc": "2026-11-01 02:48"
+     }
+    ]
+   },
+   "title": "Event detection vs. official MTA alerts"
+  },
+  {
+   "date_from": "2026-10-02",
+   "date_to": "2026-11-01",
+   "key": "placebo",
+   "metrics": [
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "traffic_speed_diff_same_station_pct",
+     "label": "Traffic speed: change during events vs. same stations at matched times",
+     "n": 0,
+     "note": "too few events",
+     "preliminary": true,
+     "unit": "%",
+     "value": null
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "traffic_speed_diff_vs_controls_pct",
+     "label": "Traffic speed: change during events vs. control stations",
+     "n": 0,
+     "note": "too few events",
+     "preliminary": true,
+     "unit": "%",
+     "value": null
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "bus_speed_diff_same_station_pct",
+     "label": "Bus speed: change during events vs. same stations at matched times",
+     "n": 0,
+     "note": "too few events",
+     "preliminary": true,
+     "unit": "%",
+     "value": null
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "bus_speed_diff_vs_controls_pct",
+     "label": "Bus speed: change during events vs. control stations",
+     "n": 0,
+     "note": "too few events",
+     "preliminary": true,
+     "unit": "%",
+     "value": null
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "bikes_available_diff_same_station_pct",
+     "label": "Citi Bikes available: change during events vs. same stations at matched times",
+     "n": 0,
+     "note": "too few events",
+     "preliminary": true,
+     "unit": "%",
+     "value": null
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "bikes_available_diff_vs_controls_pct",
+     "label": "Citi Bikes available: change during events vs. control stations",
+     "n": 0,
+     "note": "too few events",
+     "preliminary": true,
+     "unit": "%",
+     "value": null
+    }
+   ],
+   "notes": [
+    "(a) compares the stations near an event with the same stations at the same time of day on earlier days without an event there; (b) also subtracts the change at control stations at least 2000 m from any affected station (difference in differences).",
+    "Negative differences mean slower traffic or buses, or fewer bikes, during events. 95% intervals are percentile bootstraps over events.",
+    "Cameras are not tested: they are only counted during events, so there are no non-event camera counts to compare with."
+   ],
+   "status": "insufficient_data",
+   "summary": "Not enough ended events with matched non-event data yet (at least 2 per signal are needed); no conclusion about the surface impact can be drawn.",
+   "tables": {
+    "per_event": []
+   },
+   "title": "Surface impact validity (placebo test)"
+  },
+  {
+   "date_from": null,
+   "date_to": null,
+   "key": "cameras",
+   "metrics": [],
+   "notes": [
+    "True counts come from a person labeling sampled frames (ripple-cameras sample-frames, then ripple-cameras evaluate); frames are deleted afterwards and only the numbers are kept.",
+    "Bias = mean of (model - true): negative means the model under-counts."
+   ],
+   "status": "skipped",
+   "summary": "No manual labels yet (docs/evaluation/camera_labels.csv does not exist); camera accuracy is not evaluated.",
+   "tables": {},
+   "title": "Camera counting accuracy"
+  },
+  {
+   "date_from": "2026-10-02",
+   "date_to": "2026-11-01",
+   "key": "recommendations",
+   "metrics": [],
+   "notes": [
+    "Each logged recommendation is replayed against what happened next: the real recovery time of the event, the first train observed at the suggested station, and the bus speed measured in the next 30 minutes.",
+    "Trains are observed at poll times (about a minute apart, with gaps when GitHub delays runs), so realized waits are approximate.",
+    "There is no destination, so 'beating the obvious option' compares the time to get 4 km away."
+   ],
+   "status": "insufficient_data",
+   "summary": "No recommendations were logged in this period (they are only made while a disruption is ongoing).",
+   "tables": {},
+   "title": "Recommendation replay"
+  },
+  {
+   "date_from": "2026-10-02",
+   "date_to": "2026-11-01",
+   "key": "explanations",
+   "metrics": [
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "violations",
+     "label": "Sentences with a number not in their metrics",
+     "n": 12,
+     "note": null,
+     "preliminary": true,
+     "unit": "sentences",
+     "value": 0
+    }
+   ],
+   "notes": [
+    "Every stored event sentence and recommendation text is re-checked: each number in the text must equal one of the metrics stored with it (quoted alert text excepted). Any violation fails the evaluation workflow; the test suite runs the same check over every template variant."
+   ],
+   "status": "ok",
+   "summary": "0 violation(s) in 12 event sentence(s) and 0 recommendation text(s).",
+   "tables": {
+    "violations": []
+   },
+   "title": "Explanation consistency"
+  },
+  {
+   "date_from": "2026-11-01",
+   "date_to": "2026-11-01",
+   "key": "reliability",
+   "metrics": [
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_alerts",
+     "label": "Uptime: alerts",
+     "n": 2,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_bike_discovery",
+     "label": "Uptime: bike_discovery",
+     "n": 1,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_bike_info",
+     "label": "Uptime: bike_info",
+     "n": 1,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_bike_status",
+     "label": "Uptime: bike_status",
+     "n": 2,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_subway:ace",
+     "label": "Uptime: subway:ace",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_subway:bdfm",
+     "label": "Uptime: subway:bdfm",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_subway:g",
+     "label": "Uptime: subway:g",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_subway:jz",
+     "label": "Uptime: subway:jz",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_subway:l",
+     "label": "Uptime: subway:l",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_subway:nqrw",
+     "label": "Uptime: subway:nqrw",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_subway:numbered",
+     "label": "Uptime: subway:numbered",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_subway:si",
+     "label": "Uptime: subway:si",
+     "n": 6,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 1.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "uptime_traffic",
+     "label": "Uptime: traffic",
+     "n": 2,
+     "note": null,
+     "preliminary": true,
+     "unit": "share",
+     "value": 0.0
+    },
+    {
+     "ci_high": null,
+     "ci_low": null,
+     "key": "run_interval_median",
+     "label": "Median minutes between ingest runs",
+     "n": 2,
+     "note": null,
+     "preliminary": true,
+     "unit": "min",
+     "value": 54.634
+    }
+   ],
+   "notes": [
+    "Uptime is the share of fetches whose data was usable (status ok or duplicate); stale, missing, invalid and unavailable fetches count as down.",
+    "GitHub runs scheduled workflows on a best-effort basis, so the time between runs is often longer than the 5-minute schedule.",
+    "Workflow statistics were skipped (no GITHUB_TOKEN / GITHUB_REPOSITORY; they are collected in the evaluation workflow)."
+   ],
+   "status": "ok",
+   "summary": "13 source(s) monitored; lowest uptime: traffic at 0% of 2 fetches. Median 54.6 min between ingest runs (2 runs).",
+   "tables": {
+    "cadence": [
+     {
+      "longest_gap_minutes": 54.634,
+      "median_minutes_between_runs": 54.634,
+      "p95_minutes_between_runs": 54.634,
+      "runs": 2
+     }
+    ],
+    "sources": [
+     {
+      "age_median_s": 73.75,
+      "age_p95_s": 99.355,
+      "fetches": 2,
+      "first_utc": "2026-11-01 02:50",
+      "gap_minutes": 54.6,
+      "gaps": 1,
+      "last_utc": "2026-11-01 03:45",
+      "source": "alerts",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": null,
+      "age_p95_s": null,
+      "fetches": 1,
+      "first_utc": "2026-11-01 02:50",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 02:50",
+      "source": "bike_discovery",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 81.4,
+      "age_p95_s": 81.4,
+      "fetches": 1,
+      "first_utc": "2026-11-01 02:50",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 02:50",
+      "source": "bike_info",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 67.3,
+      "age_p95_s": 78.19,
+      "fetches": 2,
+      "first_utc": "2026-11-01 02:50",
+      "gap_minutes": 54.6,
+      "gaps": 1,
+      "last_utc": "2026-11-01 03:45",
+      "source": "bike_status",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 5.9,
+      "age_p95_s": 11.0,
+      "fetches": 6,
+      "first_utc": "2026-11-01 02:48",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "subway:ace",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 2.4,
+      "age_p95_s": 2.875,
+      "fetches": 6,
+      "first_utc": "2026-11-01 02:48",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "subway:bdfm",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 4.35,
+      "age_p95_s": 5.975,
+      "fetches": 6,
+      "first_utc": "2026-11-01 02:48",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "subway:g",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 2.9,
+      "age_p95_s": 4.875,
+      "fetches": 6,
+      "first_utc": "2026-11-01 02:48",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "subway:jz",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 6.9,
+      "age_p95_s": 8.0,
+      "fetches": 6,
+      "first_utc": "2026-11-01 02:48",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "subway:l",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 3.9,
+      "age_p95_s": 8.875,
+      "fetches": 6,
+      "first_utc": "2026-11-01 02:48",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "subway:nqrw",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 4.45,
+      "age_p95_s": 4.875,
+      "fetches": 6,
+      "first_utc": "2026-11-01 02:48",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "subway:numbered",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": 4.45,
+      "age_p95_s": 8.05,
+      "fetches": 6,
+      "first_utc": "2026-11-01 02:48",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "subway:si",
+      "uptime": 1.0
+     },
+     {
+      "age_median_s": null,
+      "age_p95_s": null,
+      "fetches": 2,
+      "first_utc": "2026-11-01 02:50",
+      "gap_minutes": 0.0,
+      "gaps": 0,
+      "last_utc": "2026-11-01 03:45",
+      "source": "traffic",
+      "uptime": 0.0
+     }
+    ]
+   },
+   "title": "Pipeline reliability"
+  }
+ ],
+ "window_days": 30
+}

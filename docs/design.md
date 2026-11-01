@@ -75,6 +75,8 @@ M5 implementation (details in docs/data-model.md):
 
 ## 10. Evaluation
 
+Implemented in M6 (`src/transit_ripple/evaluation/`, weekly `Evaluate` workflow, report in `docs/evaluation/`, Evaluation page on the site). Every metric carries its sample size and date range; small samples are marked preliminary.
+
 - Event detection vs. official MTA alerts (precision/recall).
 - Manually sample camera snapshots to validate YOLO counts.
 - Replay past events to check whether recommended options beat the obvious option.
@@ -92,7 +94,7 @@ M5 implementation (details in docs/data-model.md):
 - M3: cameras + YOLO (the impact score moved to M4).
 - M4: static website (GitHub Pages), cameras during events, surface impact score, rule-based explanations.
 - M5: bus data, recovery model, recommendation engine with rule-based explanations.
-- M6: evaluation framework, README, demo.
+- M6: evaluation framework (weekly report), replay demo and notable events on the site, portfolio documentation (README, case study, runbook).
 
 ## 13. Known risks
 
@@ -111,3 +113,5 @@ M5 implementation (details in docs/data-model.md):
 - M4: Public dashboard: static site (HTML/CSS/JS, Leaflet + OpenStreetMap, Chart.js) on GitHub Pages, fed by compact JSON exported from the data branch at deploy time; no Parquet is served.
 - M5: Bus speed from MTA Bus Time SIRI joins the surface impact score as a fourth signal (default weights traffic 0.3, bus 0.3, camera 0.2, bikes 0.2; renormalized when missing). Without a working `MTA_BUS_API_KEY` bus data is reported "unavailable", never normal.
 - M5: Recommendation engine and historical recovery model as described in section 8; recommendations are logged per run for M6 replay.
+- M6: Evaluation framework: detection vs. unplanned MTA alerts (one-to-one matching by line and time with a tolerance; precision, recall, time to detect; alerts only counted while the line was observed), a placebo test of the surface impact (same stations at matched non-event times and distant control stations, bootstrap 95% intervals), camera accuracy from committed numbers-only labels, replay of every logged recommendation against realized outcomes, an explanation consistency checker that fails the workflow and CI on violations, and pipeline reliability (per source and per workflow).
+- M6: Site: Evaluation page, replay mode for any past event (time slider driving the map, charts and recommendations), notable events chosen automatically by impact score (or by delay while no scores exist).

@@ -335,3 +335,61 @@ def test_recommendations_are_exported_per_station_latest_run_only(tmp_path):
     assert [o["text"] for o in a41["options"]] == ["Switch.", "Wait."]  # ranked, latest run
     assert a42["options"][0]["crowded"] and a42["options"][0]["crowd_reasons"] == ["bike_depletion"]
     assert latest_recommendations(connect(tmp_path), []) == {}
+
+
+def test_replay_data_and_notable_events(tmp_path):
+    from transit_ripple.export import notable_events, recommendation_history
+
+    write_context(tmp_path)
+    write_map_references(tmp_path)
+    rows = line_rows("A", "S", [8, 9, 12, 11, 10, 9, 8, 2, 1])
+    write_table(tmp_path, "line_minute", pd.DataFrame(rows), "r")
+    settings = Settings(
+        data_dir=tmp_path, event_min_minutes=5, event_lookback_hours=2, notable_min_duration_min=5
+    )
+    baselines = read_reference(tmp_path, "baselines")
+    now = (T0 + pd.Timedelta(minutes=9)).to_pydatetime()
+    write_table(
+        tmp_path, "events", process_events(connect(tmp_path), settings, baselines, now, "r1"), "r1"
+    )
+    recs = []
+    for minute in (2, 4):
+        for rank in (1, 2, 3, 4):
+            t = T0 + pd.Timedelta(minutes=minute)
+            recs.append(
+                {
+                    "bucket_utc": t,
+                    "computed_utc": t,
+                    "run_id": f"r{minute}",
+                    "event_id": "A-20261130T1400Z",
+                    "station_id": "A41",
+                    "station_name": "Jay St-MetroTech",
+                    "rank": rank,
+                    "option_type": "wait",
+                    "option_id": f"o{rank}",
+                    "text": f"Option {rank} at minute {minute}.",
+                    "is_obvious": rank == 2,
+                    "crowded": False,
+                    "confidence": "low",
+                }
+            )
+    write_table(tmp_path, "recommendations", pd.DataFrame(recs), "r")
+    con = connect(tmp_path)
+    history = recommendation_history(con, "A-20261130T1400Z")
+    assert [h["computed_utc"] for h in history] == ["2026-11-30T14:02:00Z", "2026-11-30T14:04:00Z"]
+    assert [o["rank"] for o in history[0]["stations"][0]["options"]] == [1, 2, 3]  # top 3 only
+    notable = notable_events(con, settings, pd.Timestamp(T0 + pd.Timedelta(hours=1)))
+    assert notable["event_id"].tolist() == ["A-20261130T1400Z"]
+    assert notable["notable_basis"].tolist() == ["impact"]
+
+    out = tmp_path / "site"
+    export_site_data(con, settings, baselines, out, (T0 + pd.Timedelta(hours=1)).to_pydatetime())
+    payload = strict_load(out / "events.json")
+    assert payload["notable"] == [{"id": "A-20261130T1400Z", "basis": "impact"}]
+    assert payload["events"][0]["in_window"] and payload["events"][0]["notable"] == "impact"
+    detail = strict_load(out / "events" / "A-20261130T1400Z.json")
+    n = len(detail["series"]["t"])
+    assert set(detail["station_series"]) == {"A41", "A42"}
+    assert all(len(v) == n for v in detail["station_series"].values())
+    assert max(v for v in detail["station_series"]["A41"] if v is not None) == 12.0
+    assert len(detail["recommendation_history"]) == 2

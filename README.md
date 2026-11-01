@@ -1,205 +1,221 @@
-# nyc-transit-ripple
+# NYC Subway Disruption Ripple
 
-When the NYC subway is disrupted, does the street network break down too? This
-project builds a near-zero-cost system to answer that question: it puts subway,
-traffic, bus, Citi Bike, camera and weather data on one timeline, detects subway
-disruptions, measures their surface "ripple", and recommends whether a rider
-should go, switch modes or wait. See the full [design document](docs/design.md).
+[![CI](https://github.com/edwinteng/nyc-transit-ripple/actions/workflows/ci.yml/badge.svg)](https://github.com/edwinteng/nyc-transit-ripple/actions/workflows/ci.yml)
 
-**Live dashboard:** <https://edwinteng.github.io/nyc-transit-ripple/> (placeholder
-until GitHub Pages is enabled; see [Dashboard on GitHub Pages](#dashboard-on-github-pages)).
+**When the subway breaks down, does the street break down too?** This project watches
+New York City's subway in near real time, detects disruptions, measures what happens
+on the streets around the affected stations, and tells riders whether to switch
+lines, take a bike or a bus, or wait. It runs entirely on free public data and free
+GitHub Actions, with no servers, no paid APIs and no language models.
 
-![Dashboard: delay events on the left, a map of the affected stations with nearby cameras and Citi Bike stations, and the selected event's timeline against usual conditions](https://edwinteng.github.io/nyc-transit-ripple/screenshot.png)
+**Live dashboard:** <https://edwinteng.github.io/nyc-transit-ripple/> ·
+**Evaluation:** [latest report](docs/evaluation/latest.md) ·
+**Case study:** [docs/case-study.md](docs/case-study.md)
 
-*The screenshot is taken by the deploy workflow and served with the site; no image
-is committed to this repository.*
+![Dashboard: delay events with their impact and the best option for riders, a map of the affected stations with nearby cameras, Citi Bike docks and road links, and the event timeline against usual conditions](https://edwinteng.github.io/nyc-transit-ripple/screenshot.png)
 
-**Status: Milestone M5** — MTA bus speeds and a recommendation engine: for every
-affected station of an ongoing disruption, ranked options (another line, Citi Bike,
-bus, or wait) with estimated times, confidence, an "avoid the crowd" check on the
-obvious option, and a plain-English sentence each. (M1: subway ingestion and
-quality checks; M2: events, alerts, traffic speed, Citi Bike, baselines; M3: traffic
-camera counts; M4: public dashboard, event cameras and the surface impact score.)
+> **Replay mode (animated GIF placeholder).** A short recording of the replay slider
+> will go here: pick a past event, press Play, and watch the station delays on the
+> map, the timelines and the suggested options change minute by minute. Until then,
+> open any notable event on the [live dashboard](https://edwinteng.github.io/nyc-transit-ripple/)
+> and press "Replay".
 
-> **Traffic cameras:** camera frames are turned into counts of cars, buses, trucks
-> and people (numbers only; frames are never stored and there is no face or
-> license plate recognition). The detector is **YOLOX-S** by Megvii, whose code
-> and pretrained weights are **Apache-2.0**, run with ONNX Runtime (MIT).
-> Ultralytics YOLO models are **not** used because they are AGPL-3.0. Weights are
-> downloaded at runtime and cached, never committed. See
-> [docs/cameras.md](docs/cameras.md).
+## The problem
 
-## Architecture
+When a subway line is disrupted, thousands of riders leave the platform at the same
+moment, and navigation apps send most of them to the same "obvious" alternative: the
+nearest other line, the bus that runs along the avenue, the Citi Bike dock outside the
+station. That alternative then overloads in turn. Riders get no signal about it, and
+agencies rarely measure it. This project asks how big, how long and where the surface
+ripple of a subway disruption is, and gives a ranked, explained answer to "go,
+switch or wait?".
 
-Everything runs on free GitHub Actions; there is no server, no paid API and no
-language model.
-
-```
- ingest.yml, every ~5 min                                        pages.yml, after each ingest run
- ---------------------------------------------------------      --------------------------------
- MTA subway GTFS-RT --+
- MTA service alerts --+--> ingest + quality checks --> Parquet, 1-min UTC buckets
- NYC DOT speeds ------+                                    |
- Citi Bike GBFS ------+                                    v
-                         baselines (weekday x 30 min, 28 days)
-                                                           |
-                         delay events (median delay >= 5 min for 5 min, per line)
-                                                           |
-                         ongoing event? count cameras within 500 m of the
-                         worst stations (YOLOX, numbers only, capped per run)
-                                                           |
-                         surface impact score (traffic, cameras, Citi Bike vs.
-                         usual) + rule-based sentences
-                                                           |
-                         data branch (Parquet snapshot) ------------> ripple export
-                                                                       site/data/*.json
-                                                                           |
-                                                       GitHub Pages: site/ (HTML, CSS, JS)
-                                                       Leaflet + OpenStreetMap, Chart.js
-```
-
-- **Python package** `transit_ripple` (`ripple` and `ripple-cameras` commands):
-  ingestion, quality checks, storage, events, camera counting, impact score,
-  explanations and the JSON export.
-- **Storage:** Hive-partitioned Parquet (`<table>/date=YYYY-MM-DD/<run_id>.parquet`,
-  naive UTC timestamps) queried with DuckDB views that deduplicate rows, published
-  to the `data` branch as one snapshot commit per run.
-- **Dashboard:** static `site/` (plain HTML/CSS/JS, no build step) that reads small
-  JSON files exported from the data branch at deploy time. No Parquet is served.
-
-## Dashboard on GitHub Pages
-
-- **Map:** subway stations; stations of ongoing and recent (24 h) events are
-  highlighted with their impact score; selecting an event shows the cameras
-  ("C"), Citi Bike stations ("B") and traffic speed road links within 500 m.
-- **Event cards:** line, start/end, peak delay, impact score with a text label,
-  linked MTA alerts and the explanation. Selecting a card focuses the map and
-  opens the detail view; `#event=<id>` links to an event.
-- **Detail view:** timelines of the subway delay, nearby traffic speed, camera
-  counts and Citi Bikes, each against its usual level, plus the per-minute impact
-  score, the signals table and the metrics behind each sentence.
-- **Status bar:** time of the last update and the freshness of every source;
-  stale or missing sources are marked with text, not only color, and a banner
-  appears if the page data is more than 20 minutes old.
-- **Accessibility:** keyboard-usable cards and map markers, text alternatives for
-  charts, contrast-checked colors, and a single-column layout on phones.
-
-One-time setup: **Settings -> Pages -> Build and deployment -> Source: GitHub
-Actions**. The [`pages.yml`](.github/workflows/pages.yml) workflow then deploys
-after every ingest run on `main` and on manual dispatch (with an option to
-regenerate the screenshot).
+**A concrete scenario.** It is 8:15 on a weekday and a signal problem suspends the A/C
+between Jay St-MetroTech and Hoyt-Schermerhorn. Within minutes the B67 and B25 stops
+on Jay Street fill up, the docks on Willoughby Street empty, and traffic on the
+Flatbush Avenue Extension slows. Everyone was told to "take the bus". The dashboard
+flags the event and scores the street impact. For riders at Jay St it ranks the
+options: switch to the F at the same station, with the next train in 2 minutes; walk
+4 minutes to Borough Hall for the 2/4; take a Citi Bike; or wait, given how long
+similar signal problems at rush hour have lasted. The obvious option is penalized if
+buses on that route are already crawling or the docks are running out.
 
 ## What it does
 
-### M5: buses and recommendations
+- **Detects subway delay events** from all eight MTA GTFS-Realtime feeds. An event
+  is a line whose median train delay stays at least 5 minutes late for 5 minutes. It
+  links events to MTA service alerts.
+- **Measures the street around the affected stations** within 500 m: road speeds
+  (NYC DOT), bus speeds (MTA Bus Time), Citi Bike availability, and vehicle and person
+  counts from traffic cameras (an open-source detector that keeps numbers, never
+  images). Each signal is compared with the usual level for that weekday and time of
+  day, giving a **0-100 surface impact score**.
+- **Recommends options** for every affected station: another line (next train from
+  live predictions), Citi Bike, bus, or wait (from how long similar past disruptions
+  lasted). The obvious option is penalized when it already looks crowded.
+- **Explains everything in plain English** with fixed templates. Every number in a
+  sentence is stored with it and checked automatically.
+- **Evaluates itself every week:** detection against official alerts, a placebo test
+  of the surface impact, camera accuracy, a replay of every logged recommendation,
+  explanation consistency, and pipeline reliability.
+- **Publishes a static dashboard** with a map, event timelines, a **replay mode** for
+  any past event, notable events chosen automatically, and an evaluation page.
 
-- **Bus speeds.** MTA Bus Time SIRI positions of every bus (free key in the
-  `MTA_BUS_API_KEY` secret), one snapshot per subway poll and never more often than
-  every 30 s, turned into speeds per route segment and minute near subway stations,
-  with weekday/time baselines. Bus speed is a fourth signal of the impact score.
-  Without a working key, bus data is marked **unavailable** in the quality report and
-  on the site (never "normal") and everything else keeps working.
-- **Recovery model ("wait").** How long similar past disruptions lasted (median and
-  75th percentile) by line, time of day and alert cause, falling back to broader
-  groups (marked low confidence) when there are fewer than 5 similar events; also the
-  time the street took to return to normal after the subway recovered.
-- **Recommendations.** For each affected station: walk to a working line (next train
-  from live predictions), Citi Bike (bikes now, dropping fast?), bus (current speed vs.
-  usual), or wait, ranked by the estimated time to get 4 km away (there is no
-  destination input yet). If the option most riders would pick looks crowded (buses
-  slowed, bikes running out, cameras counting many more people than usual), it gets a
-  penalty and a flag. Every recommendation is logged with its inputs for later replay
-  evaluation.
+## Architecture
 
-### M4: event cameras, impact score, explanations, dashboard
+```mermaid
+flowchart LR
+  subgraph SRC["Free public data"]
+    S1["MTA subway GTFS-Realtime (8 feeds)"]
+    S2["MTA service alerts"]
+    S3["MTA Bus Time SIRI"]
+    S4["NYC DOT traffic speed"]
+    S5["Citi Bike GBFS"]
+    S6["NYC traffic cameras"]
+  end
+  subgraph ING["GitHub Actions: Ingest and analyse (every ~5 min)"]
+    I1["Fetch + quality checks<br/>dedup, staleness, time jumps"]
+    I2["1-minute UTC buckets<br/>Parquet + DuckDB"]
+    I3["Baselines<br/>weekday x 30-min slot"]
+    I4["Delay events + alert linking"]
+    I5["Camera counts near ongoing events<br/>(capped, numbers only)"]
+    I6["Impact score + template explanations"]
+    I7["Ranked options: switch / bike / bus / wait"]
+  end
+  D[("data branch<br/>Parquet snapshot")]
+  E["GitHub Actions: Evaluate (weekly)"]
+  R["docs/evaluation<br/>Markdown + JSON"]
+  P["GitHub Actions: Deploy dashboard<br/>ripple export -> JSON"]
+  W["GitHub Pages<br/>Leaflet + Chart.js, replay mode"]
+  S1 --> I1
+  S2 --> I1
+  S3 --> I1
+  S4 --> I1
+  S5 --> I1
+  I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> I7 --> D
+  S6 --> I5
+  D --> E --> R
+  D --> P
+  R --> P
+  P --> W
+```
 
-- **Cameras during events.** For each *ongoing* event (most severe first), the
-  cameras within 500 m of its most affected stations are counted through the M3
-  module (`count_near_stations`); the counts are stored with the event. A hard cap
-  (`RIPPLE_EVENT_CAMERA_MAX_PER_RUN`, default 30) bounds the cameras per run, and
-  no camera is requested when no event is ongoing.
-- **Surface impact score (0-100)** from (a) the drop of nearby traffic speed, (b)
-  the increase of camera counts of vehicles and people and (c) the drop of Citi
-  Bike availability, each relative to the same weekday and time of day.
-  Configurable weights (0.4 / 0.3 / 0.3; with buses since M5: 0.3 / 0.3 / 0.2 / 0.2) are renormalized over the signals that
-  have data and a reliable baseline, and the signals used are stored with the
-  score. Missing everything gives "not enough data", never 0. The time the
-  surface recovered is detected from the per-minute score.
-- **Explanations:** one sentence on the subway disruption and one on the surface
-  (traffic slowdown, bike drop and camera change vs. usual, score, recovery), from
-  fixed templates. Every sentence is stored with the metrics it quotes, and tests
-  check that no other number appears.
-- **Dashboard** on GitHub Pages (see above), fed by compact JSON
-  (`events.json`, `stations.json`, `status.json`, one file per event).
+The `transit_ripple` Python package does all the work, through the `ripple` and
+`ripple-cameras` commands. Data lives as Hive-partitioned Parquet with naive UTC
+timestamps, queried through DuckDB views that deduplicate rows. Each run publishes a
+single snapshot commit to the `data` branch. The website is plain HTML, CSS and
+JavaScript, served from compact JSON exported at deploy time; the browser never sees
+Parquet.
 
-### M2: events and surface context
+## Key engineering decisions and trade-offs
 
-- **Delay events.** A line has an event when its worst-direction median train
-  delay is at least 5 min for 5 consecutive minutes (threshold, N and the metric
-  are configurable). Each event stores start/end, affected stations, peak delay
-  and linked MTA service alerts.
-- **Service alerts.** The MTA subway alerts feed (GTFS-Realtime + the MTA
-  "Mercury" extension) is ingested every run; alert versions and their presence
-  over time are stored, and alerts that match an event's line and time are linked.
-- **NYC DOT traffic speed** (NYC Open Data / Socrata, no key; optional free app
-  token) and **Citi Bike GBFS** (official auto-discovery, station information and
-  status; bikes and docks per station per minute) are normalized to the shared
-  schema with freshness recorded.
-- **Spatial join.** For every subway station: DOT road links and Citi Bike
-  stations within 500 m.
-- **Baselines** by weekday and 30-minute time of day (New York time) from the last
-  28 days, flagged `low` confidence with fewer than 3 days of history.
-- **Rule-based explanations** (no language model): a short plain-English summary
-  per event that only uses numbers present in the data, stored with the list of
-  cited numbers.
-- **Static output (superseded by the M4 dashboard):** `ripple site` still renders
-  a PNG chart per event and an `index.html` for offline use.
-- **Data quality** for the new sources (status, staleness, coverage, gaps) is part
-  of every run's report.
+**Multi-rate time alignment.** Subway feeds update every 30 seconds, Citi Bike every
+minute, DOT traffic speeds every 5 minutes (sometimes hours late), cameras only when
+asked, and GitHub runs the scheduler "about" every 5 minutes. Everything is bucketed
+to 1-minute UTC slots, keeping both observation and fetch times. Values are
+forward-filled only up to a per-source maximum age, with that age recorded. Past the
+limit, a value becomes missing; it is never stale-but-assumed-current.
+Same-weekday, same-time-of-day baselines use local New York time, so rush hours line
+up across daylight-saving changes.
 
-### M1: subway ingestion and quality
+**Data quality is a first-class output.** Every run writes a quality report covering
+deduplication, stale and future timestamps, time jumps, implausible delays,
+schedule-match rates and coverage. A stale or failed source is marked
+*missing* or *unavailable*, never "normal". The site shows the freshness of each
+source. Low-confidence baselines (fewer than 3 comparable days) are excluded from the
+impact score instead of quietly used, and the score is renormalized over the signals
+that remain.
 
-- Fetches all 8 MTA subway GTFS-Realtime feeds (every line, including the
-  shuttles and the Staten Island Railway). No API key is needed.
-- Decodes them with `gtfs-realtime-bindings` plus the MTA's NYCT extension
-  (train id, whether a train is assigned, scheduled/actual track).
-- Loads the MTA "supplemented" static GTFS schedule (regular schedule plus
-  planned work) and caches it as Parquet.
-- Matches every realtime trip to its scheduled trip and computes, for each trip
-  at each station, realtime vs. scheduled time in minutes.
-- Runs data quality checks on every snapshot: deduplication, stale-feed and
-  outage detection, and filtering of abnormal time jumps. Every run writes a
-  quality report.
-- Stores results in 1-minute UTC buckets as Parquet, queryable with DuckDB.
-- Runs on GitHub Actions every 5 minutes.
+**Cost control.**
+- **Zero paid APIs.** Every feed is free; the only keys are free ones held in GitHub
+  Secrets.
+- **Cameras only during events.** Object detection, the expensive step, runs only
+  while a disruption is ongoing, near its worst stations, capped at 30 cameras per
+  run.
+- **Rule-based text.** Explanations come from templates rather than an LLM. They cost
+  nothing and are deterministic, and an automated checker can prove that no sentence
+  states a number that is not in the data.
+- **Bounded storage.** Raw detail is kept as short-lived workflow artifacts; only
+  aggregates live on the data branch.
 
-Details of the tables and every quality rule: [docs/data-model.md](docs/data-model.md).
+**GitHub Actions security.**
+- **Minimal permissions.** The default token is read-only; only the job that commits
+  data can write, and only the Pages deploy job gets `pages: write` and
+  `id-token: write`.
+- **Pinned actions.** Every third-party action is pinned to a commit SHA.
+- **Secrets stay away from pull requests.** Secrets are used only by scheduled or
+  manually dispatched workflows, which never run for pull requests, and
+  `pull_request_target` is not used. Keys are read from environment variables, never
+  logged, and stripped from the URLs stored in reports.
 
-## Quick start
+**Honest uncertainty.** Every metric shows its sample size and date range, and small
+samples are labeled *preliminary*. Each recommendation carries a confidence level
+and the inputs behind it. The evaluation reports negative or inconclusive results as
+they are.
 
-Requires Python 3.11+. [uv](https://docs.astral.sh/uv/) is recommended:
+## Evaluation results
+
+From the [first report](docs/evaluation/latest.md) (2026-11-01). It covers only a few
+hours of data, because the scheduled pipeline had not started running yet, so
+**every number below is preliminary**. The weekly report replaces it automatically.
+
+| What | Result | Sample |
+|---|---|---|
+| Detected events matching an unplanned MTA alert (precision) | 33% | 6 events |
+| Alerts with a matching detected event (recall, while data was collected) | 50% | 4 alert-lines |
+| Median time to detect (event start minus alert time) | +3.9 min | 2 matches |
+| Surface impact placebo test | not enough data yet | 0 events with matched non-event days |
+| Camera counting accuracy | not evaluated yet: no manual labels | 0 frames |
+| Recommendation replay | no recommendations logged yet | 0 |
+| Explanation sentences with an uncited number | 0 | 12 sentences |
+| Median time between ingest runs | 54.6 min (2 manual runs) | 2 runs |
+
+See the [Evaluation page](https://edwinteng.github.io/nyc-transit-ripple/evaluation.html)
+for charts, confidence intervals and caveats.
+
+## Limitations and future work
+
+- **No destination yet.** Options are ranked by the time to get 4 km away from the
+  station. **Destination-aware routing** (origin-destination travel times on each
+  mode) is the main next step.
+- **Longer history.** Baselines, the recovery model and the placebo test all need
+  weeks to months of continuous data. The "wait" estimate falls back to broader groups
+  (marked low confidence) until then.
+- **Better ground truth.** MTA alerts are late, missing for short delays, and sometimes
+  describe planned work. Better ground truth would come from hand-labeled incidents,
+  official delay statistics, or crowd-sourced reports.
+- **Coverage of free data.** Traffic sensors cover mostly highways and arterials.
+  Cameras are only counted during events. Bus speeds need a working Bus Time key.
+  Station crowding itself is not observable.
+- **Scheduling.** GitHub runs scheduled workflows on a best-effort basis; gaps are
+  recorded and shown, not hidden. Long-term storage should move from a git branch to
+  object storage or release assets.
+- **Associations, not causation.** The placebo test guards against chance and
+  city-wide effects but cannot prove that a disruption caused a slowdown.
+
+## Run it locally
+
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync --extra vision
 ```
 
 ```bash
-uv run ripple ingest --polls 6 --interval 60
+uv run ripple ingest --sources subway,bus,alerts,traffic,bikes --polls 6 --interval 60
 ```
 
 ```bash
-uv run ripple baselines && uv run ripple events
+uv run ripple baselines && uv run ripple events && uv run ripple recommend
 ```
 
 ```bash
 uv run ripple export --out site/data && python -m http.server 8000 -d site
 ```
 
-Then open <http://localhost:8000/>. The `vision` extra (ONNX Runtime, Pillow) is
-only needed for camera counts during events; without it, or with
-`ripple events --no-cameras`, events are scored on traffic and Citi Bike alone.
-The camera-to-station mapping comes from `uv run ripple-cameras map` (it
-downloads the public camera list once a week). To browse the data published by
+Then open <http://localhost:8000/>. Bus data needs a free MTA Bus Time key in the
+`MTA_BUS_API_KEY` environment variable (or a local `.env` file); without it, bus data
+is reported as unavailable and everything else works. To use the history collected by
 the scheduled pipeline instead, export from the data branch:
 
 ```bash
@@ -210,359 +226,34 @@ git fetch origin data && git worktree add ../ripple-data origin/data
 uv run ripple export --data-dir ../ripple-data --out site/data
 ```
 
-Or with plain pip:
+## Reproduce the evaluation
 
 ```bash
-python -m venv .venv && . .venv/bin/activate && pip install -e .
+uv run ripple evaluate --data-dir ../ripple-data --out /tmp/evaluation --check-explanations
 ```
 
-```bash
-ripple ingest
-```
+This writes `latest.md`, `latest.json` and a dated copy, and exits with an error if
+any explanation contains a number that is not in its metrics. Copy `latest.json` to
+`site/data/evaluation.json` to see it on the local Evaluation page. Workflow
+reliability statistics are added when `GITHUB_TOKEN` and `GITHUB_REPOSITORY` are set,
+as they are in the weekly workflow. To evaluate the camera detector, follow
+[docs/cameras.md](docs/cameras.md#accuracy-evaluation). Then save the filled-in
+`labels.csv` and the resulting `predictions.csv` (numbers only) as
+`docs/evaluation/camera_labels.csv` and `docs/evaluation/camera_predictions.csv`.
 
-The first run downloads the static schedule (~20 MB zip, converted in a few
-seconds). Output goes to `./data` (gitignored), and the quality report is
-printed, for example:
+Tests (all offline): `uv run pytest`; lint: `uv run ruff check . && uv run ruff format --check .`.
 
-```
-| Source | Status | Age (s) | Records | Valid | New | Stale | Coverage | Gap (min) |
-|---|---|---|---|---|---|---|---|---|
-| alerts | ok | 297 | 191 | 16 | 191 | 0 | - | - |
-| traffic | stale | 4702 | 256 | 177 | 256 | 125 | 0% | - |
-| bike_status | ok | 77 | 2518 | 2375 | 2518 | 32 | 94% | - |
-```
+## Documentation
 
-Events need some history: with the default rule a line must be late for 5
-consecutive minutes, so run `ripple ingest --polls 6 --interval 60` (or several
-runs) before `ripple events`. Comparisons with "usual" conditions need baselines
-from earlier weeks; until then summaries say that no baseline exists yet.
+- [Design document](docs/design.md): goals, architecture, milestones and revision history
+- [Data model](docs/data-model.md): tables, quality rules, events, the impact score,
+  recommendations, the export schema
+- [Operations](docs/operations.md): commands, configuration, workflows, known
+  limitations by milestone
+- [Runbook](docs/runbook.md): what to do when a feed or workflow fails
+- [Traffic cameras](docs/cameras.md): detector, license and accuracy evaluation
+- [Case study](docs/case-study.md): the story, results and lessons learned
+- [Evaluation reports](docs/evaluation/)
 
-### Commands
-
-| Command | Purpose |
-|---|---|
-| `ripple ingest [--sources subway,alerts,traffic,bikes] [--polls N --interval S]` | Fetch sources, compute delays, run checks, write Parquet + report |
-| `ripple ingest --replay data/raw/*/*.pb.gz` | Re-process saved subway payloads offline (no network) |
-| `ripple baselines [--force]` | Weekday x time-of-day baselines (skipped if computed in the last 24 h) |
-| `ripple events [--now ISO] [--no-cameras]` | Detect delay events, link alerts, count cameras near ongoing events, score the surface impact, write explanations |
-| `ripple recommend [--now ISO]` | Rank go / switch / wait options for the affected stations of ongoing events and log them |
-| `ripple export [--out site/data]` | Write the dashboard JSON (status, stations, events, one file per event) |
-| `ripple site [--out DIR]` | M2 offline report: PNG charts and `index.html` (default `data/site`) |
-| `ripple neighbors` | Recompute the 500 m spatial join |
-| `ripple prune --table bike_minute [--keep-days N]` | Retention for large tables |
-| `ripple query "SQL"` | Run SQL against the DuckDB views (`--format table/csv/json`) |
-| `ripple lines [--start ISO --end ISO --route A,L --max-age 10]` | 1-minute line delays, forward-filled with freshness |
-| `ripple compact [--before YYYY-MM-DD]` | Merge per-run Parquet files of past days into one file per day |
-| `ripple static [--force]` | Download/convert the static GTFS only |
-
-All commands accept `--data-dir` (default `./data` or `RIPPLE_DATA_DIR`).
-
-### Example queries
-
-Recent delay events and their summaries:
-
-```bash
-uv run ripple query "
-  SELECT event_id, status, round(peak_delay_min, 1) AS peak, duration_min, summary
-  FROM events ORDER BY start_utc DESC LIMIT 5"
-```
-
-Citi Bikes near a station right now:
-
-```bash
-uv run ripple query "
-  SELECT n.station_name, n.neighbor_name, round(n.distance_m) AS m, b.bikes_available
-  FROM station_neighbors n JOIN bike_minute b ON b.station_id = n.neighbor_id
-  WHERE n.station_name = 'Jay St-MetroTech' AND n.neighbor_type = 'bike_station'
-    AND b.bucket_utc = (SELECT max(bucket_utc) FROM bike_minute)
-  ORDER BY m"
-```
-
-Current delay by line:
-
-```bash
-uv run ripple query "
-  SELECT route_id, direction, n_trips_measured, delay_mean_min, delay_p90_min, share_trips_delayed
-  FROM line_minute
-  WHERE bucket_utc = (SELECT max(bucket_utc) FROM line_minute WHERE status = 'ok')
-  ORDER BY delay_mean_min DESC"
-```
-
-Most delayed stations in the last hour (observed arrivals only):
-
-```bash
-uv run ripple query "
-  SELECT stop_name, route_id, count(*) AS n, round(avg(delay_min), 1) AS avg_delay
-  FROM stop_delays
-  WHERE time_kind = 'actual' AND bucket_utc > now()::TIMESTAMP - INTERVAL 1 HOUR
-  GROUP BY ALL HAVING n >= 3 ORDER BY avg_delay DESC LIMIT 10"
-```
-
-Feed health over time:
-
-```bash
-uv run ripple query "
-  SELECT feed_id, status, count(*) AS polls, round(avg(feed_age_s)) AS avg_age_s
-  FROM quality_feed GROUP BY ALL ORDER BY feed_id, status"
-```
-
-From Python:
-
-```python
-from transit_ripple.storage import connect
-
-con = connect("data")
-df = con.execute("SELECT * FROM line_minute LIMIT 5").df()
-```
-
-## Data layout
-
-```
-data/
-  stop_delays/date=YYYY-MM-DD/<run_id>.parquet   trip x stop delays (detail, short-term)
-  line_minute/date=YYYY-MM-DD/<run_id>.parquet   route x direction x minute aggregates
-  quality_feed/date=YYYY-MM-DD/<run_id>.parquet  quality counters per feed and poll
-  station_minute/...                             observed delays per station x minute
-  quality_source/...                             quality counters per other source
-  alerts/..., alert_presence/...                 service alert versions and presence
-  traffic_minute/...                             DOT traffic speed per link observation
-  bike_minute/...                                Citi Bike bikes/docks per station x minute
-  events/...                                     delay event versions: camera counts, impact
-                                                 score and explanation sentences
-  camera_counts/...                              cars/buses/trucks/people per camera fetch
-  bus_minute/...                                 bus speed per route segment x minute
-  recommendations/...                            every ranked option per station and run
-  reference/                                     stations, links, bike stations, cameras,
-                                                 neighbors, camera-station map, baselines
-  reports/date=YYYY-MM-DD/<run_id>.json          full quality report per run
-  reports/events/date=YYYY-MM-DD/<run_id>.json   cameras counted per event and run
-  state.json, camera_state.json                  dedup / freshness state between runs
-  raw/                                           raw payloads (only with --save-raw)
-  static/                                        static GTFS cache (Parquet)
-```
-
-Large raw data is never committed: `data/`, `*.parquet`, `*.pb`, `*.zip` are gitignored.
-
-## Configuration and secrets
-
-Settings come from environment variables (prefix `RIPPLE_`), optionally loaded
-from a local `.env` file (gitignored; existing environment variables win). See
-[`.env.example`](.env.example) for every option, including all quality thresholds.
-
-No paid keys are needed. Secrets are only ever read from environment variables
-(GitHub Secrets in CI, `.env` locally), are never logged, and are sent only to
-their own host:
-
-- `SOCRATA_APP_TOKEN` (optional, free NYC Open Data app token for higher rate
-  limits): sent as `X-App-Token` to `data.cityofnewyork.us` only.
-- `MTA_BUS_API_KEY` (free MTA Bus Time key, needed for bus data): sent as the `key`
-  query parameter to `bustime.mta.info` only; quality reports record URLs without
-  query parameters.
-- `MTA_API_KEY` (optional, not needed today): sent as `x-api-key` to MTA only.
-
-Key settings (all `RIPPLE_<NAME>`): `EVENT_THRESHOLD_MIN` (5), `EVENT_MIN_MINUTES`
-(N = 5), `EVENT_METRIC` (`delay_median_min`), `NEIGHBOR_RADIUS_M` (500),
-`BASELINE_DAYS` (28), `BASELINE_MIN_DAYS` (3), `BIKE_RETENTION_DAYS` (35).
-
-Impact score and cameras (M4; the formula is in
-[docs/data-model.md](docs/data-model.md#surface-impact-score)):
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `IMPACT_WEIGHT_TRAFFIC`, `_BUS`, `_CAMERA`, `_BIKES` | 0.3, 0.3, 0.2, 0.2 | Signal weights, renormalized over usable signals |
-| `IMPACT_TRAFFIC_FULL_DROP_PCT` | 40 | Traffic speed drop vs. usual that scores 100 |
-| `IMPACT_CAMERA_FULL_INCREASE_PCT` | 100 | Camera count increase that scores 100 |
-| `IMPACT_BIKES_FULL_DROP_PCT` | 30 | Citi Bike availability drop that scores 100 |
-| `IMPACT_MIN_CONFIDENCE` | `ok` | Baselines with less history are not used (`low` to allow them) |
-| `IMPACT_RECOVERY_THRESHOLD`, `_MINUTES` | 20, 10 | Recovered: score below 20 for 10 minutes |
-| `EVENT_CAMERAS_ENABLED` | `true` | Count cameras during ongoing events |
-| `EVENT_CAMERA_MAX_PER_RUN` | 30 | Hard cap on cameras counted per run |
-| `EXPORT_WINDOW_DAYS`, `EXPORT_MAX_POINTS` | 30, 120 | Events shown; chart points per series |
-| `REC_REFERENCE_TRIP_KM` | 4 | Options are compared on the time to get this far away |
-| `WALK_SPEED_M_PER_S`, `WALK_DETOUR_FACTOR` | 1.3, 1.3 | Walking time = distance x detour / speed |
-| `REC_CROWD_PENALTY_MIN` | 5 | Added to the obvious option when it looks crowded |
-| `RECOVERY_MIN_EVENTS` | 5 | Similar past events needed before falling back to broader groups |
-
-## Automation (GitHub Actions)
-
-- [`ingest.yml`](.github/workflows/ingest.yml) runs every 5 minutes (and on
-  manual dispatch): 3 subway snapshots 60 seconds apart, then alerts, traffic
-  speed and Citi Bike status once, baselines, events, camera counts near ongoing
-  events (capped), the impact score and the explanations.
-  Slower cadences are handled inside the run instead of separate schedules
-  (a second scheduled workflow sharing the data-branch concurrency group could be
-  starved): GBFS discovery and station information daily, static GTFS every 6
-  hours, the camera list weekly, baselines daily, compaction and retention once a
-  day has rolled over.
-  Each run then:
-  - publishes aggregates, events, camera counts, reference tables and state to the
-    **`data` branch**, replaced by a single snapshot commit each run (force-push
-    with lease). Publishing happens whenever ingestion succeeded, even if an
-    analysis step failed (the job still fails visibly);
-  - uploads per-stop delays and the JSON report as a workflow artifact kept for
-    7 days ("raw data short-term, aggregates long-term");
-  - adds the Markdown quality report to the job summary.
-- [`pages.yml`](.github/workflows/pages.yml) runs after every ingest run on `main`
-  (and on manual dispatch): it checks out the data branch read-only, runs
-  `ripple export` into the site, and deploys `site/` with the official
-  `actions/upload-pages-artifact` and `actions/deploy-pages`.
-- [`cameras.yml`](.github/workflows/cameras.yml) (manual, plus a synthetic-frame
-  benchmark on pull requests that change the camera module).
-- [`ci.yml`](.github/workflows/ci.yml) runs lint and tests on Python 3.11–3.13.
-
-Workflow security: the default token is read-only (`contents: read`); only the
-ingestion job gets `contents: write`, to push the data branch, and only the Pages
-deploy job gets `pages: write` and `id-token: write`. Every action is pinned to a
-commit SHA. `SOCRATA_APP_TOKEN` is only used by the scheduled /
-manually dispatched ingestion workflow, which never runs for pull requests, so it
-cannot reach forks; CI needs no secrets, checks out without persisted credentials,
-and `pull_request_target` is not used.
-
-Scheduled workflows only run from the default branch, so ingestion starts once
-this is merged to `main`. Optional repository variables:
-
-| Variable | Default | Effect |
-|---|---|---|
-| `RIPPLE_DATA_BRANCH` | `data` | Branch for aggregates (`main`/`master` are refused) |
-| `RIPPLE_PUBLISH_DATA` | (on) | Set to `false` to stop publishing to the data branch |
-| `RIPPLE_ARTIFACT_RETENTION_DAYS` | `7` | Retention of per-run artifacts |
-| `RIPPLE_EVENT_CAMERAS_ENABLED` | `true` | Set to `false` to stop counting cameras during events |
-| `RIPPLE_EVENT_CAMERA_MAX_PER_RUN` | `30` | Hard cap on cameras counted per ingest run |
-| `RIPPLE_SITE_URL` | `https://<owner>.github.io/<repo>/` | Live site, used to reuse the screenshot |
-
-To analyse the published history locally:
-
-```bash
-git fetch origin data && git worktree add ../ripple-data origin/data
-```
-
-```bash
-uv run ripple query --data-dir ../ripple-data "SELECT count(*) FROM line_minute"
-```
-
-## Development
-
-```bash
-uv run pytest
-```
-
-```bash
-uv run ruff check . && uv run ruff format --check .
-```
-
-Tests use synthetic static schedules and GTFS-Realtime payloads (built with the
-same protobuf classes, including the NYCT extension), so they run offline.
-
-## Known limitations
-
-### M5
-
-- **The bus key must work.** Bus Time currently rejects the configured key ("API key
-  is not authorized"), so bus speeds are unavailable and bus options use usual or
-  assumed speeds (low confidence) until a valid key is stored.
-- **No destination.** Options are compared on the time to get 4 km away from the
-  station; a rider going one stop or across the city may be better served otherwise.
-  Destination-aware routing is future work.
-- **Assumptions where data is missing.** Bus waits are assumed (6 min; no headway
-  model yet), walking uses straight-line distance x 1.3, and ride speeds are typical
-  averages. Each option carries a confidence label and its inputs are logged.
-- **The "wait" estimate needs history.** With fewer than 5 similar past events the
-  estimate falls back to broader groups (low confidence); with no recovered events
-  there is no estimate and "wait" ranks last.
-- **Crowding signals are indirect** (bus slowdown, bike depletion, camera person
-  counts) and need baselines; until then the avoid-the-crowd check rarely fires.
-
-### M4
-
-- **Camera baselines fill slowly.** Cameras are only counted during events, so
-  their weekday/time baselines come from earlier event-time counts at the same
-  cameras. They are sparse and biased towards disrupted periods; until a slot has
-  3 days of history (`ok` confidence) the camera signal is left out and the score
-  is renormalized over traffic and Citi Bike.
-- **The first weeks show "not enough data".** All baselines need at least 3 days
-  of the same weekday and time, i.e. about 3 weeks of collection, before any
-  impact score appears. Until then events show observed values only.
-- **Camera cap.** At most 30 cameras per run (about one per second); with many
-  ongoing events, the most severe ones get cameras first and others may get none
-  in that run. Counts are snapshots once per run, not continuous video.
-- **Scores are a heuristic.** The weights and "full" changes are judgment calls
-  (documented and configurable), not fitted to ground truth; the score describes
-  conditions near a disruption, not causation.
-- **Recovery** needs the score to stay below 20 for 10 consecutive minutes within
-  2 hours after the event; gaps in the surface data delay or prevent it
-  (`not_yet` / `unknown`).
-- **Freshness of the page.** The site is redeployed after each ingest run, so it
-  lags real time by one run plus the deploy (typically 5-10 minutes, more when
-  GitHub delays scheduled runs).
-- **Third-party assets.** Leaflet and Chart.js load from unpkg (version-pinned with
-  Subresource Integrity) and map tiles from the OpenStreetMap tile servers, which
-  are meant for light use; a high-traffic deployment should use another tile
-  provider.
-
-### M2
-
-- **Event timing depends on sampling.** With the default rule an event needs 5
-  consecutive minutes, 2 of them observed; GitHub cron delays longer than the
-  10-minute gap tolerance split or end events (`end_reason = data_gap`). Events
-  that were already under way when data collection started appear to start then.
-- **Disruption onsets can be filtered.** The M1 delay-jump filter drops a trip
-  whose prediction jumps by more than elapsed time + 15 min, which happens when the
-  MTA re-times trains at the start of a disruption; such trips count again from
-  the next observation.
-- **Affected stations** come from observed arrivals only (`time_kind = 'actual'`);
-  stations a delayed train has not reached yet are not listed. The surface
-  context uses the 3 most affected stations.
-- **Traffic speed coverage and freshness.** The DOT network covers mostly
-  highways and arterials (123 of 496 stations have a link within 500 m), and the
-  feed can lag for hours (3.5 h was observed while building M2); stale data is
-  marked missing, never used as current.
-- **Citi Bike** availability includes e-bikes; rebalancing trucks and station
-  outages also move the numbers. 367 of 496 stations have docks within 500 m.
-- **Baselines need weeks of history.** Same weekday/time slots only fill up after
-  3 weeks (`low` confidence before), the most recent 24 hours are excluded, and
-  past disruptions are not removed from the baseline yet.
-- **Alert linking** matches line and time (station overlap only ranks alerts);
-  planned-work notices are numerous and listed separately. The alerts feed header
-  is a last-change time, so staleness is only flagged after 6 hours.
-- **Comparisons are descriptive.** The summaries report differences from the
-  baseline during the event; they do not claim causation.
-- **Data branch size.** `bike_minute` is ~2.3 MB/day compacted and kept 35 days
-  (~80 MB), plus the current day's per-run files; the branch is fetched in full by
-  every run. Moving long-term storage to Releases/object storage remains planned.
-
-### M1
-
-- **Coverage gaps.** GitHub cron runs at most every 5 minutes and is often
-  delayed or skipped; with 3 snapshots per run, roughly 3 of every 5 minutes are
-  observed at best. Gaps are explicit: `ripple lines` forward-fills for at most
-  `--max-age` minutes, then reports `missing`.
-- **Predictions vs. observations.** Delays at upcoming stops are MTA predictions.
-  Only the current stop of a train (`time_kind = 'actual'`) is an observed
-  arrival. Held or "ghost" trains with frozen predictions have their stale
-  downstream rows dropped; their current-stop delay can understate the real
-  delay (no dwell-based lower bound yet).
-- **Schedule matching is incomplete.** Added trips, reroutes and schedule
-  changes mean some trips cannot be matched; they get no delay. On a live sample
-  match rates were 68–100% per feed (on the day of a schedule change). The
-  weekday fallback used around schedule changes is lower confidence and labelled
-  in `match_method`.
-- **Unassigned trips** (no train yet) are kept in `stop_delays` but excluded
-  from line statistics, because their times are just the schedule.
-- **Delay-jump filter** compares with the previous observation of the same trip.
-  A genuine sudden re-prediction is dropped once (the new level is then accepted).
-- **Data branch size.** Measured on a simulated full day, compacted
-  `line_minute` data is about 0.5 MB/day, plus the smaller `quality_feed`. That is
-  fine for months but should move to GitHub Releases or free object storage
-  later (design §5). The data branch keeps no git history by design.
-- **Static schedule refresh** every 6 hours: planned work published in between is
-  not matched until the next refresh.
-- **Daylight-saving days** follow the GTFS "noon minus 12 h" rule; the MTA's own
-  behaviour on transition days has not been verified.
-- Public repositories: GitHub disables scheduled workflows after 60 days without
-  repository activity; re-enable from the Actions tab if that happens.
-
-## Roadmap
-
-M6 evaluation framework, replay demo, portfolio documentation.
-Explanations are always rule-based and generated in GitHub Actions (no local
-model). See [docs/design.md](docs/design.md).
+Data: MTA, NYC DOT / NYC Open Data, NYCTMC, Citi Bike (Lyft). Map data © OpenStreetMap
+contributors. Not affiliated with any of them.
