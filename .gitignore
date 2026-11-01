@@ -39,3 +39,7 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Dashboard JSON written by `ripple export` (built in the Pages workflow, never committed)
+site/data/
+site/screenshot.png

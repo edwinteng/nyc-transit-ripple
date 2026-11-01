@@ -1,0 +1,120 @@
+name: Deploy dashboard
+
+# Builds the static dashboard (site/ + JSON exported from the data branch) and
+# deploys it to GitHub Pages with the official Pages actions.
+#
+# Triggers: after every "Ingest and analyse" run on the default branch, and by
+# hand. One-time setup: Settings -> Pages -> Build and deployment -> Source:
+# "GitHub Actions".
+#
+# Security: the build job has a read-only token; only the deploy job gets
+# pages: write and id-token: write. workflow_run only fires for the ingest
+# workflow, which never runs for pull requests, so no fork code reaches this
+# workflow. pull_request_target is not used. Third-party actions are pinned to
+# commit SHAs.
+on:
+  workflow_run:
+    workflows: ["Ingest and analyse"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      screenshot:
+        description: "Regenerate the README screenshot (screenshot.png on the site)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer data snapshot supersedes a queued one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  DATA_BRANCH: ${{ vars.RIPPLE_DATA_BRANCH || 'data' }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+jobs:
+  build:
+    # The ingest job may fail in an analysis step after publishing data, so deploy
+    # unless it was cancelled or skipped.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion != 'cancelled'
+          && github.event.workflow_run.conclusion != 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install
+        run: uv sync --frozen --no-dev
+
+      - name: Check out data branch (read-only)
+        run: scripts/data_branch.sh prepare datastore
+
+      - name: Export dashboard JSON (no Parquet is published)
+        run: |
+          mkdir -p _site
+          cp site/index.html site/style.css site/app.js _site/
+          uv run --no-sync ripple export --data-dir datastore --out _site/data
+
+      # The README shows https://<owner>.github.io/<repo>/screenshot.png. It is
+      # generated on request (or if the live site has none) and otherwise copied
+      # from the live site, so no image is ever committed to git.
+      - name: Reuse the live screenshot
+        id: reuse
+        if: github.event_name != 'workflow_dispatch' || !inputs.screenshot
+        env:
+          SITE_URL: ${{ vars.RIPPLE_SITE_URL || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
+        run: |
+          if curl -fsSL --max-time 30 "${SITE_URL%/}/screenshot.png" -o _site/screenshot.png; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            rm -f _site/screenshot.png
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate a dashboard screenshot
+        if: steps.reuse.outputs.found != 'true'
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_VERSION: "1.63.0"
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@$PLAYWRIGHT_VERSION"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+          python3 -m http.server 8000 --bind 127.0.0.1 -d _site > /dev/null 2>&1 &
+          sleep 2
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node scripts/screenshot.cjs \
+            http://127.0.0.1:8000/ _site/screenshot.png
+          kill %1 || true
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write # deploy to GitHub Pages
+      id-token: write # verify that the deployment comes from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

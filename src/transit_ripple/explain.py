@@ -1,29 +1,32 @@
-"""Rule-based plain-English event summaries (no language model).
+"""Rule-based plain-English event explanations (no language model).
 
-Every number in a summary comes from the event record, and is also returned in
-``cited_metrics`` exactly as printed, so tests can check that a summary never
-contains a number that is not in the data. Alert text is quoted verbatim.
+Each event gets one or two sentences:
+
+1. the subway disruption: line, how late, how long, when, worst station;
+2. the surface: how nearby traffic, camera counts and Citi Bikes compared with
+   the usual level for that weekday and time, the impact score, and when the
+   surface recovered (or why no comparison is possible yet).
+
+Every sentence is returned with the metrics it uses, exactly as printed, so a
+check can prove that no sentence contains a number that is not in the data.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from .config import AGENCY_TIMEZONE
 
-METRIC_LABELS = {
-    "delay_median_min": "median",
-    "delay_mean_min": "average",
-    "delay_p90_min": "90th-percentile",
-    "delay_max_min": "maximum",
-}
-DIRECTION_LABELS = {"N": "northbound", "S": "southbound"}
 # Stand-alone numbers and clock times (digits inside words such as "p90" are not numbers).
 NUMBER_RE = re.compile(r"(?<![\w.])(?:\d{1,2}:\d{2}|\d+(?:\.\d+)?)(?![\w])")
 QUOTED_RE = re.compile(r'"[^"]*"')
+
+SIGNAL_ORDER = ("traffic", "camera", "bikes")
 
 
 def _local(ts) -> pd.Timestamp:
@@ -31,161 +34,171 @@ def _local(ts) -> pd.Timestamp:
 
 
 def _num(value, digits: int = 1) -> str:
-    v = round(float(value), digits)
-    return f"{v:.{digits}f}" if digits else f"{int(round(v))}"
+    # Round half away from zero (as the dashboard does), not to even: 62.5 -> 63.
+    q = Decimal(1).scaleb(-digits)
+    d = Decimal(repr(float(value))).quantize(q, rounding=ROUND_HALF_UP)
+    return str(abs(d) if d == 0 else d)  # never "-0.0"
+
+
+def _present(value) -> bool:
+    if value is None:
+        return False
+    try:
+        return not pd.isna(value)
+    except (TypeError, ValueError):
+        return True
 
 
 def _listify(value) -> list:
-    if value is None:
-        return []
-    if isinstance(value, float) and pd.isna(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
         return []
     return list(value)
 
 
-def _present(value) -> bool:
-    return value is not None and not (isinstance(value, float) and pd.isna(value))
+class _Sentence:
+    def __init__(self):
+        self.metrics: dict[str, str] = {}
+
+    def cite(self, name: str, text: str) -> str:
+        self.metrics[name] = text
+        return text
+
+
+def _join(parts: list[str]) -> str:
+    if len(parts) <= 1:
+        return "".join(parts)
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def subway_sentence(event: dict) -> dict:
+    s = _Sentence()
+    route = s.cite("route_id", str(event["route_id"]))
+    start = _local(event["start_utc"])
+    end = _local(event["end_utc"])
+    date = s.cite("date_local", f"{start:%a %b} {start.day}")
+    start_txt = s.cite("start_local", f"{start:%H:%M}")
+    duration = s.cite("duration_min", _num(event["duration_min"], 0))
+    if _present(event.get("peak_delay_min")):
+        peak = s.cite("peak_delay_min", _num(event["peak_delay_min"]))
+        how = f"a median of up to {peak} min late"
+    else:
+        how = f"at least {s.cite('threshold_min', _num(event['threshold_min']))} min late"
+    if event.get("status") == "ongoing":
+        text = (
+            f"{route} trains have been running {how} for {duration} min, "
+            f"since {start_txt} ET on {date}"
+        )
+    elif event.get("end_reason") == "data_gap":
+        text = (
+            f"{route} trains ran {how} for at least {duration} min from {start_txt} ET on {date} "
+            "(the end time is uncertain because subway data stopped)"
+        )
+    else:
+        end_txt = s.cite("end_local", f"{end:%H:%M}")
+        text = (
+            f"{route} trains ran {how} for {duration} min, "
+            f"from {start_txt} to {end_txt} ET on {date}"
+        )
+    names = _listify(event.get("affected_station_names"))
+    delays = _listify(event.get("affected_station_max_delay_min"))
+    if names:
+        name = s.cite("station_0_name", str(names[0]))
+        if delays and _present(delays[0]):
+            worst = s.cite("station_0_max_delay_min", _num(delays[0]))
+            text += f", worst at {name} ({worst} min)"
+        else:
+            text += f", worst at {name}"
+    return {"text": text + ".", "metrics": s.metrics}
+
+
+def _signal_clause(name: str, pct: float, s: _Sentence) -> str:
+    amount = s.cite(f"{name}_change_pct_abs", _num(abs(pct), 0))
+    if name == "traffic":
+        return f"nearby traffic was {amount}% {'slower' if pct < 0 else 'faster'}"
+    if name == "bikes":
+        return f"Citi Bike availability was {amount}% {'lower' if pct < 0 else 'higher'}"
+    return f"cameras counted {amount}% {'more' if pct >= 0 else 'fewer'} vehicles and people"
+
+
+def surface_sentence(event: dict) -> dict:
+    s = _Sentence()
+    radius = s.cite("radius_m", _num(event.get("neighbor_radius_m") or 500, 0))
+    used = [n for n in SIGNAL_ORDER if n in _listify(event.get("impact_signals_used"))]
+    pct = {
+        "traffic": event.get("traffic_change_pct"),
+        "camera": event.get("camera_change_pct"),
+        "bikes": event.get("bikes_change_pct"),
+    }
+    clauses = [_signal_clause(n, pct[n], s) for n in used if _present(pct[n])]
+    score = event.get("impact_score")
+    if clauses and _present(score):
+        score_txt = s.cite("impact_score", _num(score, 0))
+        scale = s.cite("impact_scale", "100")
+        text = (
+            f"Within {radius} m of the worst-hit stations, {_join(clauses)} than usual for this "
+            f"weekday and time (surface impact {score_txt}/{scale})"
+        )
+        status = event.get("surface_recovery_status")
+        if status == "recovered" and _present(event.get("surface_recovered_utc")):
+            when = s.cite(
+                "surface_recovered_local", f"{_local(event['surface_recovered_utc']):%H:%M}"
+            )
+            text += f", and the surface had recovered by {when} ET"
+        elif status == "not_yet" and _present(event.get("surface_checked_until_utc")):
+            when = s.cite(
+                "surface_checked_until_local",
+                f"{_local(event['surface_checked_until_utc']):%H:%M}",
+            )
+            text += f", and it had not recovered by {when} ET"
+        elif status == "no_impact":
+            text += ", so surface conditions stayed close to normal"
+        return {"text": text + ".", "metrics": s.metrics}
+
+    observed = []
+    if _present(event.get("traffic_speed_mph")) and int(event.get("traffic_n_links") or 0):
+        speed = s.cite("traffic_speed_mph", _num(event["traffic_speed_mph"]))
+        observed.append(f"traffic averaged {speed} mph")
+    if _present(event.get("camera_objects")) and int(event.get("camera_n_cameras") or 0):
+        n_cams = s.cite("camera_n_cameras", str(int(event["camera_n_cameras"])))
+        objects = s.cite("camera_objects", _num(event["camera_objects"], 0))
+        observed.append(f"{n_cams} camera(s) counted about {objects} vehicles and people")
+    if _present(event.get("bikes_available")) and int(event.get("bikes_n_stations") or 0):
+        bikes = s.cite("bikes_available", _num(event["bikes_available"], 0))
+        observed.append(f"{bikes} Citi Bikes were available")
+    if observed:
+        text = (
+            f"Within {radius} m, {_join(observed)}, but there is not enough baseline history yet "
+            "to compare them with usual conditions for this weekday and time."
+        )
+    else:
+        text = f"No fresh traffic, camera or Citi Bike data was available within {radius} m."
+    return {"text": text, "metrics": s.metrics}
+
+
+def explain_sentences(event: dict) -> list[dict]:
+    """One or two sentences, each with the metrics it cites."""
+    return [subway_sentence(event), surface_sentence(event)]
 
 
 def explain(event: dict) -> tuple[str, dict]:
     """Return (summary, cited_metrics) for one event record."""
-    cited: dict[str, str] = {}
-
-    def cite(name: str, text: str) -> str:
-        cited[name] = text
-        return text
-
-    route = cite("route_id", str(event["route_id"]))
-    radius = cite("radius_m", _num(event.get("neighbor_radius_m") or 500, 0))
-    start = _local(event["start_utc"])
-    end = _local(event["end_utc"])
-    metric = METRIC_LABELS.get(event.get("metric"), event.get("metric", "delay"))
-    threshold = cite("threshold_min", _num(event["threshold_min"]))
-    duration = cite("duration_min", _num(event["duration_min"], 0))
-    day = cite("date_local", f"{start:%a %b} {start.day}")
-    start_txt = cite("start_local", f"{start:%H:%M}")
-    parts = []
-    if event.get("status") == "ongoing":
-        when = f"since {start_txt} ET on {day} ({duration} min so far)"
-        head = f"{route} train delays are ongoing"
-    else:
-        end_txt = cite("end_local", f"{end:%H:%M}")
-        when = f"from {start_txt} to {end_txt} ET on {day} ({duration} min)"
-        head = f"{route} train delays"
-        if event.get("end_reason") == "data_gap":
-            head += " (end time uncertain: subway data stopped)"
-    sentence = (
-        f"{head}: {when}, the {metric} train delay on the {route} line was at least {threshold} min"
-    )
-    if _present(event.get("peak_delay_min")) and _present(event.get("peak_utc")):
-        peak = cite("peak_delay_min", _num(event["peak_delay_min"]))
-        peak_at = cite("peak_local", f"{_local(event['peak_utc']):%H:%M}")
-        direction = DIRECTION_LABELS.get(event.get("peak_direction") or "", "")
-        sentence += f", peaking at {peak} min at {peak_at}" + (
-            f" ({direction})" if direction else ""
-        )
-    parts.append(sentence + ".")
-
-    names = _listify(event.get("affected_station_names"))
-    delays = _listify(event.get("affected_station_max_delay_min"))
-    if names:
-        shown = []
-        for i, (name, delay) in enumerate(list(zip(names, delays, strict=False))[:3]):
-            name = cite(f"station_{i}_name", str(name))
-            shown.append(
-                f"{name} (up to {cite(f'station_{i}_max_delay_min', _num(delay))} min late)"
-            )
-        parts.append("Most affected stations: " + ", ".join(shown) + ".")
-    else:
-        parts.append("No station-level arrival observations were available for this event.")
-
-    n_links = int(event.get("traffic_n_links") or 0)
-    speed = event.get("traffic_speed_mph")
-    if n_links and _present(speed):
-        links = cite("traffic_n_links", str(n_links))
-        speed_txt = cite("traffic_speed_mph", _num(speed))
-        base = event.get("traffic_baseline_mph")
-        change = event.get("traffic_change_pct")
-        if _present(base) and _present(change):
-            base_txt = cite("traffic_baseline_mph", _num(base))
-            pct = cite("traffic_change_pct_abs", _num(abs(change), 0))
-            side = "below" if change < 0 else "above"
-            parts.append(
-                f"Traffic on {links} DOT road link(s) within {radius} m of the most affected "
-                f"stations averaged {speed_txt} mph, {pct}% {side} the usual {base_txt} mph for "
-                "this weekday "
-                "and time."
-            )
-        else:
-            parts.append(
-                f"Traffic on {links} DOT road link(s) within {radius} m averaged {speed_txt} mph; "
-                "there is no baseline for this weekday and time yet."
-            )
-    else:
-        parts.append(f"No fresh DOT traffic speed data was available within {radius} m.")
-
-    n_bike = int(event.get("bikes_n_stations") or 0)
-    bikes = event.get("bikes_available")
-    if n_bike and _present(bikes):
-        stations_txt = cite("bikes_n_stations", str(n_bike))
-        bikes_txt = cite("bikes_available", _num(bikes, 0))
-        base = event.get("bikes_baseline")
-        change = event.get("bikes_change")
-        if _present(base) and _present(change):
-            base_txt = cite("bikes_baseline", _num(base, 0))
-            diff = cite("bikes_change_abs", _num(abs(change), 0))
-            pct = event.get("bikes_change_pct")
-            pct_txt = (
-                f" ({cite('bikes_change_pct_abs', _num(abs(pct), 0))}%)" if _present(pct) else ""
-            )
-            side = "fewer" if change < 0 else "more"
-            parts.append(
-                f"About {bikes_txt} Citi Bikes were available at {stations_txt} station(s) within "
-                f"{radius} m, {diff}{pct_txt} {side} than the usual {base_txt}."
-            )
-        else:
-            parts.append(
-                f"About {bikes_txt} Citi Bikes were available at {stations_txt} station(s) within "
-                f"{radius} m; there is no baseline for this weekday and time yet."
-            )
-    else:
-        parts.append(f"No fresh Citi Bike availability data was available within {radius} m.")
-
-    low = [
-        label
-        for label, key in (
-            ("traffic", "traffic_baseline_confidence"),
-            ("bike", "bikes_baseline_confidence"),
-        )
-        if event.get(key) == "low"
-    ]
-    if low:
-        parts.append(
-            f"The {' and '.join(low)} baseline(s) rest on little history, so these comparisons "
-            "are indicative only."
-        )
-
-    alerts = _listify(event.get("linked_alerts"))
-    unplanned = [a for a in alerts if not a.get("is_planned")]
-    planned = [a for a in alerts if a.get("is_planned")]
-    if unplanned:
-        a = unplanned[0]
-        text = " ".join((a.get("header_text") or "").replace('"', "'").split())
-        if len(text) > 160:
-            text = text[:157].rstrip() + "..."
-        parts.append(f'MTA alert ({a.get("alert_type") or "alert"}): "{text}"')
-    if planned:
-        parts.append(
-            f"{cite('n_planned_alerts', str(len(planned)))} planned-work notice(s) also applied to "
-            "this line."
-        )
-    if not alerts:
-        parts.append("No MTA service alert matched this line and time.")
-    return " ".join(parts), cited
+    sentences = explain_sentences(event)
+    cited: dict = {}
+    for s in sentences:
+        cited.update(s["metrics"])
+    return " ".join(s["text"] for s in sentences), cited
 
 
-def uncited_numbers(summary: str, cited: dict) -> list[str]:
-    """Numbers in the summary (outside quoted alert text) that are not cited."""
+def sentences_of(event: dict) -> list[dict]:
+    """Stored sentences of an event (JSON column), or freshly generated ones."""
+    raw = event.get("explanation")
+    if isinstance(raw, str) and raw:
+        return json.loads(raw)
+    return explain_sentences(event)
+
+
+def uncited_numbers(text: str, cited: dict) -> list[str]:
+    """Numbers in a text (outside quoted alert text) that are not cited."""
     allowed = {tok for value in cited.values() for tok in NUMBER_RE.findall(str(value))}
-    text = QUOTED_RE.sub("", summary)
-    return [tok for tok in NUMBER_RE.findall(text) if tok not in allowed]
+    plain = QUOTED_RE.sub("", text)
+    return [tok for tok in NUMBER_RE.findall(plain) if tok not in allowed]

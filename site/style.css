@@ -1,0 +1,155 @@
+/* NYC Subway Disruption Ripple dashboard. Plain CSS, no build step.
+   Colors meet WCAG AA contrast for text; impact levels are always shown with
+   text (number and label), never by color alone. */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1b1f24;
+  --muted: #4b5563;
+  --border: #d0d7de;
+  --focus: #0b57d0;
+  --ok: #166534;
+  --stale: #92400e;
+  --missing: #991b1b;
+  --info: #1e40af;
+  --impact-severe: #8b1e1e;
+  --impact-high: #b4360c;
+  --impact-moderate: #8a5300;
+  --impact-low: #166534;
+  --impact-unknown: #4b5563;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.45;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+a { color: var(--info); }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); border: 0;
+}
+.skip-link { position: absolute; left: -999px; top: 0; background: #fff; padding: .5rem; z-index: 2000; }
+.skip-link:focus { left: .5rem; }
+
+.site-header { background: #102a43; color: #fff; padding: .9rem 1.25rem; }
+.site-header h1 { margin: 0; font-size: 1.4rem; }
+.tagline { margin: .15rem 0 .6rem; color: #d9e2ec; }
+.last-update { margin: 0 0 .4rem; font-size: .9rem; color: #f0f4f8; }
+.status-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .4rem; }
+.status-chip {
+  display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .55rem;
+  border-radius: 999px; font-size: .82rem; background: #fff; color: var(--text);
+  border: 2px solid transparent;
+}
+.status-chip .state { font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
+.status-chip.ok { border-color: #86efac; }
+.status-chip.ok .state { color: var(--ok); }
+.status-chip.stale, .status-chip.degraded { border-color: #f59e0b; border-style: dashed; }
+.status-chip.stale .state, .status-chip.degraded .state { color: var(--stale); }
+.status-chip.missing { border-color: #ef4444; border-style: dotted; }
+.status-chip.missing .state { color: var(--missing); }
+.status-chip.on_demand, .status-chip.building { border-color: #93c5fd; }
+.status-chip.on_demand .state, .status-chip.building .state { color: var(--info); }
+.stale-banner {
+  margin: .5rem 0 0; padding: .4rem .6rem; background: #fef3c7; color: #78350f;
+  border-radius: 6px; font-weight: 600;
+}
+
+.layout {
+  display: grid; gap: 1rem; padding: 1rem;
+  grid-template-columns: minmax(300px, 380px) 1fr;
+  grid-template-areas: "events map" "events detail";
+}
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: .8rem 1rem; }
+.panel h2 { margin: .1rem 0 .5rem; font-size: 1.1rem; }
+.events-panel { grid-area: events; }
+.map-panel { grid-area: map; }
+.detail-panel { grid-area: detail; }
+.about { margin: 0 1rem 1.5rem; }
+.muted { color: var(--muted); }
+.small { font-size: .85rem; }
+
+.event-list { display: flex; flex-direction: column; gap: .6rem; max-height: 140vh; overflow-y: auto; }
+.event-card {
+  display: block; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer;
+  background: #fff; border: 1px solid var(--border); border-left: 6px solid var(--impact-unknown);
+  border-radius: 8px; padding: .6rem .7rem;
+}
+.event-card:hover { background: #f8fafc; }
+.event-card[aria-pressed="true"] { outline: 3px solid var(--focus); background: #eff6ff; }
+.event-card.impact-severe { border-left-color: var(--impact-severe); }
+.event-card.impact-high { border-left-color: var(--impact-high); }
+.event-card.impact-moderate { border-left-color: var(--impact-moderate); }
+.event-card.impact-low { border-left-color: var(--impact-low); }
+.card-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.card-title { font-weight: 700; }
+.card-times, .card-metrics { font-size: .85rem; color: var(--muted); margin: .25rem 0; }
+.card-summary { margin: .35rem 0 0; font-size: .9rem; }
+
+.route-bullet {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 1.8rem; height: 1.8rem;
+  padding: 0 .3rem; border-radius: 999px; font-weight: 800; color: #fff; background: #4b5563;
+}
+.route-bullet.dark-text { color: #111; }
+.status-badge {
+  font-size: .72rem; font-weight: 700; text-transform: uppercase; padding: .1rem .4rem;
+  border-radius: 4px; border: 1px solid currentColor;
+}
+.status-badge.ongoing { color: var(--missing); }
+.status-badge.ended { color: var(--muted); }
+.impact-badge {
+  display: inline-block; font-size: .78rem; font-weight: 700; color: #fff; padding: .12rem .45rem; border-radius: 4px;
+}
+.impact-badge.impact-severe, .badge-pin.impact-severe { background: var(--impact-severe); }
+.impact-badge.impact-high, .badge-pin.impact-high { background: var(--impact-high); }
+.impact-badge.impact-moderate, .badge-pin.impact-moderate { background: var(--impact-moderate); }
+.impact-badge.impact-low, .badge-pin.impact-low { background: var(--impact-low); }
+.impact-badge.impact-unknown, .badge-pin.impact-unknown { background: var(--impact-unknown); }
+
+.map { height: 52vh; min-height: 320px; border-radius: 8px; }
+.legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin-top: .5rem; font-size: .82rem; color: var(--muted); }
+.legend-item { display: inline-flex; align-items: center; gap: .35rem; }
+.dot.station { width: .7rem; height: .7rem; border-radius: 50%; background: #9aa5b1; border: 1px solid #52606d; display: inline-block; }
+.line-traffic { width: 1.4rem; border-top: 3px dashed #6d28d9; display: inline-block; }
+
+/* Map pins (Leaflet divIcons): shape and text carry the meaning, color supports it. */
+.badge-pin {
+  display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border-radius: 50%; color: #fff; font-size: 11px; font-weight: 800; border: 2px solid #fff;
+  box-shadow: 0 0 0 1px #111;
+}
+.badge-pin.ongoing { box-shadow: 0 0 0 3px #111; }
+.badge-pin.recent { border-style: dashed; }
+.pin-camera, .pin-bike {
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  font-size: 11px; font-weight: 800; border: 1px solid #111;
+}
+.pin-camera { background: #1e3a8a; color: #fff; border-radius: 3px; }
+.pin-bike { background: #e0f2fe; color: #0c4a6e; border-radius: 50%; }
+.leaflet-div-icon { background: transparent; border: none; }
+
+.detail h3 { margin: .2rem 0 .4rem; font-size: 1.05rem; }
+.sentences { margin: .2rem 0 .8rem; padding-left: 1.1rem; }
+.sentences li { margin-bottom: .35rem; }
+.metrics-used { font-size: .8rem; color: var(--muted); }
+.metrics-used dl { display: grid; grid-template-columns: max-content 1fr; gap: 0 .6rem; margin: .2rem 0; }
+.metrics-used dt { font-family: ui-monospace, monospace; }
+.metrics-used dd { margin: 0; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .8rem; }
+.chart-box { border: 1px solid var(--border); border-radius: 8px; padding: .5rem; }
+.chart-box h4 { margin: 0 0 .3rem; font-size: .9rem; }
+.chart-box .chart-wrap { position: relative; height: 180px; }
+.chart-empty { color: var(--muted); font-size: .85rem; padding: 2rem .5rem; text-align: center; }
+.alerts { margin: .5rem 0; padding-left: 1.1rem; font-size: .9rem; }
+.signals { width: 100%; border-collapse: collapse; font-size: .85rem; margin: .4rem 0 .8rem; }
+.signals th, .signals td { border-bottom: 1px solid var(--border); padding: .25rem .4rem; text-align: left; }
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; grid-template-areas: "map" "events" "detail"; padding: .6rem; }
+  .map { height: 45vh; }
+  .event-list { max-height: none; }
+  .about { margin: 0 .6rem 1rem; }
+}

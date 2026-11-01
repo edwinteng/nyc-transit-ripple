@@ -5,7 +5,8 @@
 #   scripts/data_branch.sh publish <dir> <message>  replace the data branch with <dir>
 #
 # The data branch holds aggregates, short-retention Citi Bike minutes, events,
-# reference tables, the static site and state.json. It is published as a single
+# camera counts (numbers only), reference tables and state files. The dashboard
+# JSON is not stored here: the Pages workflow exports it from these tables. It is published as a single
 # snapshot commit (force-pushed with a lease) so its history does not grow by
 # one commit every five minutes.
 # Detailed per-stop data and reports are excluded via the branch's .gitignore
@@ -53,6 +54,7 @@ stop_delays/
 reports/
 raw/
 static/
+site/
 *.tmp
 EOF
     cat >README.md <<'EOF'
@@ -65,11 +67,14 @@ each run replaces this branch with a single snapshot commit.
 - `alerts/`, `alert_presence/`: MTA service alert versions and when they were in the feed
 - `traffic_minute/`: NYC DOT traffic speed observations per road link
 - `bike_minute/`: Citi Bike bikes and docks per station and minute (kept 35 days)
-- `events/`: subway delay events with rule-based summaries (one row per version)
+- `events/`: subway delay events with camera counts, surface impact score and
+  rule-based explanations (one row per version)
+- `camera_counts/`: cars, buses, trucks and people per camera fetch (numbers only,
+  counted only near ongoing events)
 - `quality_feed/`, `quality_source/`: data quality counters per run
-- `reference/`: stations, road links, Citi Bike stations, 500 m neighbors, baselines
-- `site/`: static `index.html` and event charts (ready for GitHub Pages)
-- `state.json`: dedup / freshness state carried between runs
+- `reference/`: stations, road links, Citi Bike stations, cameras, 500 m neighbors,
+  camera-station map, baselines
+- `state.json`, `camera_state.json`: dedup / freshness state carried between runs
 
 Query with DuckDB, e.g. `ripple query --data-dir . "SELECT * FROM events LIMIT 10"`.
 EOF

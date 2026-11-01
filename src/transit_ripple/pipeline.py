@@ -172,7 +172,9 @@ class Pipeline:
 
         neighbors_path = self.data_dir / "reference" / "station_neighbors.parquet"
         if references_changed or (self.sources and not neighbors_path.exists()):
-            refresh_neighbors(self.data_dir, self.schedule.stops, self.settings.neighbor_radius_m)
+            refresh_neighbors(
+                self.data_dir, self.schedule.stops, self.settings.neighbor_radius_m, self.schedule
+            )
 
         for table, frame in tables.items():
             files = write_table(self.data_dir, table, frame, run_id)
@@ -389,9 +391,38 @@ def station_minute(stop_delays: pd.DataFrame, run_id: str) -> pd.DataFrame:
     return out
 
 
-def refresh_neighbors(data_dir: Path, stops: pd.DataFrame, radius_m: float) -> pd.DataFrame:
+def station_routes(schedule: StaticSchedule) -> dict[str, list[str]]:
+    """Routes scheduled to stop at each parent station (from the static GTFS)."""
+    import duckdb
+
+    trips = schedule.trips[["trip_id", "route_id"]]
+    if schedule._stop_times is not None:
+        stop_routes = schedule._stop_times[["trip_id", "stop_id"]].merge(trips, on="trip_id")
+        pairs = stop_routes[["stop_id", "route_id"]].drop_duplicates()
+    else:
+        con = duckdb.connect()
+        try:
+            con.register("trips", trips)
+            pairs = con.execute(
+                "SELECT DISTINCT st.stop_id, t.route_id FROM read_parquet(?) st "
+                "JOIN trips t USING (trip_id)",
+                [str(schedule._stop_times_path)],
+            ).df()
+        finally:
+            con.close()
+    pairs["station_id"] = pairs["stop_id"].map(schedule.parent_station).fillna(pairs["stop_id"])
+    grouped = pairs.groupby("station_id")["route_id"].agg(lambda r: sorted(set(r)))
+    return grouped.to_dict()
+
+
+def refresh_neighbors(
+    data_dir: Path, stops: pd.DataFrame, radius_m: float, schedule: StaticSchedule | None = None
+) -> pd.DataFrame:
     """Recompute the subway station -> traffic link / bike station spatial join."""
     stations = subway_stations(stops)
+    if schedule is not None:
+        routes = station_routes(schedule)
+        stations["routes"] = stations["station_id"].map(lambda s: routes.get(s, []))
     write_reference(data_dir, "subway_stations", stations)
     neighbors = station_neighbors(
         stations,

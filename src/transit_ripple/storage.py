@@ -303,6 +303,39 @@ SCHEMAS: dict[str, pa.Schema] = {
             ("bikes_baseline_confidence", pa.string()),
             ("summary", pa.string()),
             ("cited_metrics", pa.string()),
+            # M4: cameras, impact score, surface recovery, sentence-level explanation.
+            ("camera_ids", pa.list_(pa.string())),
+            (
+                "camera_counts",
+                pa.list_(
+                    pa.struct(
+                        [
+                            ("camera_id", pa.string()),
+                            ("observed_utc", TS),
+                            ("car", pa.int32()),
+                            ("bus", pa.int32()),
+                            ("truck", pa.int32()),
+                            ("person", pa.int32()),
+                        ]
+                    )
+                ),
+            ),
+            ("camera_n_cameras", pa.int32()),
+            ("camera_vehicles", pa.float64()),
+            ("camera_persons", pa.float64()),
+            ("camera_objects", pa.float64()),
+            ("camera_objects_baseline", pa.float64()),
+            ("camera_change_pct", pa.float64()),
+            ("camera_baseline_confidence", pa.string()),
+            ("impact_score", pa.float64()),
+            ("impact_signals_used", pa.list_(pa.string())),
+            ("impact_detail", pa.string()),
+            ("impact_peak_score", pa.float64()),
+            ("impact_peak_utc", TS),
+            ("surface_recovered_utc", TS),
+            ("surface_recovery_status", pa.string()),
+            ("surface_checked_until_utc", TS),
+            ("explanation", pa.string()),
         ]
     ),
 }
@@ -315,6 +348,7 @@ REFERENCE_SCHEMAS: dict[str, pa.Schema] = {
             ("station_name", pa.string()),
             ("lat", pa.float64()),
             ("lon", pa.float64()),
+            ("routes", pa.list_(pa.string())),
         ]
     ),
     "traffic_links": pa.schema(
@@ -493,6 +527,7 @@ def connect(data_dir: Path, database: str = ":memory:") -> duckdb.DuckDBPyConnec
         else:
             con.register(f"_{name}_empty", schema.empty_table())
             con.execute(f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM _{name}_empty")
+    register_camera_views(con, data_dir)
     return con
 
 
@@ -546,6 +581,20 @@ def prune(data_dir: Path, table: str, keep_days: int, today: dt.date) -> list[st
     return removed
 
 
+def register_camera_views(con: duckdb.DuckDBPyConnection, data_dir: Path) -> None:
+    """Camera tables (M3) live in the same data directory. Call again after new
+    counts were written to a directory that had none (the view binds to the files
+    that exist when it is created)."""
+    from .cameras.storage import register_views
+
+    register_views(con, data_dir)
+    con.execute(
+        "CREATE OR REPLACE VIEW camera_counts_ok AS SELECT *, "
+        "(car + bus + truck)::DOUBLE AS vehicles, person::DOUBLE AS persons "
+        "FROM camera_counts WHERE status = 'ok'"
+    )
+
+
 def compact(data_dir: Path, table: str, before: dt.date) -> list[str]:
     """Merge per-run files of each date partition older than ``before`` into one file.
 
@@ -555,7 +604,14 @@ def compact(data_dir: Path, table: str, before: dt.date) -> list[str]:
     root = Path(data_dir) / table
     if not root.exists():
         return []
-    keys, order = DEDUP_KEYS[table]
+    if table == "camera_counts":  # camera module table (M3), same dedup rule as its view
+        from .cameras.storage import COUNTS_SCHEMA
+
+        schema = COUNTS_SCHEMA
+        keys, order = ["bucket_utc", "camera_id"], "observed_utc, run_id"
+    else:
+        schema = SCHEMAS[table]
+        keys, order = DEDUP_KEYS[table]
     order_desc = ", ".join(f"{part.strip()} DESC" for part in order.split(","))
     done = []
     for part_dir in sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("date=")):
@@ -568,7 +624,7 @@ def compact(data_dir: Path, table: str, before: dt.date) -> list[str]:
             continue
         target = part_dir / "compacted.parquet"
         tmp = part_dir / "compacted.parquet.tmp"
-        cols = ", ".join(SCHEMAS[table].names)
+        cols = ", ".join(schema.names)
         src = ", ".join(f"'{f.as_posix()}'" for f in files)
         con = duckdb.connect()
         try:

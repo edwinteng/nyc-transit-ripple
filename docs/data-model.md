@@ -1,4 +1,4 @@
-# Data model, quality rules and analysis (M1 + M2)
+# Data model, quality rules and analysis (M1-M4)
 
 This document describes what the pipeline stores, which data quality rules it
 applies and how delay events, baselines and explanations are computed. All
@@ -300,17 +300,132 @@ Only entities that have both a fresh value and a baseline in a minute are compar
 so "observed" and "usual" always describe the same links/stations. Without
 baselines the observed values are still reported, with no comparison.
 
+## Cameras during events (M4)
+
+`ripple events` passes a camera hook to event processing. For each **ongoing**
+event that has affected stations, most severe (highest peak delay) first, it calls
+`cameras.count_near_stations(focal_station_ids, max_cameras=<cameras left>)`:
+
+- cameras within 500 m of the event's 3 most affected stations are taken from the
+  M3 camera-station map, round-robin over the stations (nearest camera first), so
+  a cap still covers every station; a camera near several stations is counted once;
+- every count (cars, buses, trucks, people; numbers only) is written to
+  `camera_counts` like any M3 count, and cameras over the cap are reported as
+  `skipped_cap` without a request;
+- one detector and one HTTP client are reused for the whole run, and the cap
+  (`RIPPLE_EVENT_CAMERA_MAX_PER_RUN`, default 30) is shared by all events of the
+  run. Ended events never trigger requests, and nothing is fetched when no event is
+  ongoing;
+- failures (no mapping yet, the `vision` extra missing, a model download error)
+  are logged in the run's events report and never stop event processing.
+
+The event row then stores `camera_ids` (cameras within the radius),
+`camera_counts` (latest valid count per camera between the event start and 2
+minutes after its end), and the averages used for the score: `camera_vehicles`
+(car + bus + truck), `camera_persons`, `camera_objects` (their sum),
+`camera_objects_baseline`, `camera_change_pct` and `camera_baseline_confidence`.
+Per-run hook results (cameras counted, statuses, errors) are written to
+`reports/events/date=YYYY-MM-DD/<run_id>.json`.
+
+Camera baselines (`camera_vehicles`, `camera_persons`) are computed like the
+other baselines from `camera_counts` with status `ok`. Because cameras are only
+counted during events, they fill slowly and describe event-time conditions; the
+minimum-confidence rule below keeps them out of the score until a slot has enough
+history.
+
+## Surface impact score
+
+For each event the surface series (minute by minute, over the event and up to
+`impact_recovery_window_min` = 120 minutes after it) is compared with the
+baselines for the same weekday and 30-minute slot. Over the event window the
+average observed value and average baseline give one change per signal:
+
+| Signal | Observed vs. baseline | Sub-score = 100 at | Setting |
+|---|---|---|---|
+| `traffic` | average speed of DOT links within 500 m | 40% slower | `IMPACT_TRAFFIC_FULL_DROP_PCT` |
+| `camera` | vehicles + people counted per camera within 500 m | 100% more | `IMPACT_CAMERA_FULL_INCREASE_PCT` |
+| `bikes` | Citi Bikes available within 500 m | 30% fewer | `IMPACT_BIKES_FULL_DROP_PCT` |
+
+```
+change_pct = (observed - baseline) / baseline * 100
+sub_score  = clip(100 * change / full_change, 0, 100)   # change in the "worse" direction
+score      = sum(w_i * sub_score_i) / sum(w_i)          # over the usable signals only
+```
+
+Weights `IMPACT_WEIGHT_TRAFFIC` = 0.4, `IMPACT_WEIGHT_CAMERA` = 0.3,
+`IMPACT_WEIGHT_BIKES` = 0.3 (all `RIPPLE_` settings). A change in the "better"
+direction (faster traffic, fewer people, more bikes) gives 0, not a negative
+score. A signal is **usable** only when it has an observation, a positive
+baseline, a baseline confidence of at least `IMPACT_MIN_CONFIDENCE` (`ok` = at
+least 3 days of history) and a weight above 0; otherwise it is reported with
+status `no_data`, `no_baseline`, `low_confidence` or `zero_weight` and the
+weights are **renormalized** over the remaining signals. With no usable signal
+the score is NULL ("not enough data"), never 0.
+
+Stored per event: `impact_score`, `impact_signals_used` (list) and
+`impact_detail` (JSON: per signal the status, observed value, baseline,
+confidence, change, sub-score, configured and effective weight, plus the rule
+settings). Example: traffic 25% slower (sub-score 62.5), Citi Bikes 15% fewer
+(50) and no camera data gives (0.4 x 62.5 + 0.3 x 50) / 0.7 = 57.1.
+
+The dashboard labels scores as low (< 20), moderate (20-49), high (50-74) and
+severe (75+), always with the number.
+
+### Surface recovery
+
+The same formula, applied minute by minute with the signals used for the event
+(renormalized per minute), gives `impact_series`. `impact_peak_score` /
+`impact_peak_utc` are its maximum during the event. Then:
+
+- peak below `IMPACT_RECOVERY_THRESHOLD` (20): `surface_recovery_status = no_impact`;
+- otherwise `surface_recovered_utc` is the first minute after the peak that starts
+  `IMPACT_RECOVERY_MINUTES` (10) consecutive minutes with a known score below 20
+  (`recovered`); if that has not happened yet, `not_yet`, with
+  `surface_checked_until_utc` = the last minute with a known score;
+- no score: `unknown`.
+
+Missing minutes break a recovery run, so data gaps delay recovery rather than
+fake it.
+
 ## Explanations
 
-`summary` is generated by rule-based templates (no language model, design
-section 9). Every number in it is taken from the event record and is also stored,
-exactly as printed, in `cited_metrics` (JSON); a test checks that a summary never
-contains a number that is not cited (quoted MTA alert text excepted). Missing,
-stale or low-confidence inputs are stated explicitly.
+Every event gets one or two sentences from fixed templates (no language model,
+design section 9), stored in `explanation` as JSON
+`[{"text": ..., "metrics": {name: value as printed}}]`; `summary` joins the
+sentences and `cited_metrics` merges their metrics.
 
-## Static site
+1. **Subway:** line, how late (peak median delay, or "at least the threshold"),
+   duration, start/end in New York time, worst station and its delay; ongoing and
+   data-gap variants.
+2. **Surface:** the change of each *used* signal vs. usual for the weekday and
+   time (traffic slower/faster, Citi Bike availability lower/higher, camera counts
+   more/fewer), the impact score and the recovery time ("had recovered by",
+   "had not recovered by", "stayed close to normal"). Without usable baselines it
+   gives the observed values and says that there is not enough baseline history
+   yet; without any fresh data it says so.
 
-`ripple site` writes `site/index.html` (recent events with summaries, linked
-alerts, cited numbers and the latest data status) and `site/charts/<event_id>.png`
-(line delay, nearby traffic speed and nearby Citi Bikes over time, with
-baselines and the event shaded). Charts are re-rendered only when an event changed.
+Numbers are rounded half up (as in the browser). Tests check, per sentence, that
+every number in the text is one of its cited metrics and that every cited metric
+appears in the text.
+
+## Dashboard export
+
+`ripple export --out site/data` writes compact JSON (UTC ISO 8601 strings ending
+in `Z`, NaN written as `null`, numbers rounded) for the static dashboard; the
+browser never reads Parquet. Files:
+
+| File | Content |
+|---|---|
+| `status.json` | `generated_utc`, `last_pipeline_run_utc`, and per source (`subway`, `alerts`, `traffic`, `bike_status`, `cameras`, `baselines`): `status` (`ok`, `degraded`, `stale`, `missing`, `on_demand`, `building`), `data_utc`, `checked_utc`, `data_age_min`, `detail` |
+| `stations.json` | every subway station (`id`, `name`, `lat`, `lon`, `routes`) and, if it is affected by an ongoing event or one that ended in the last 24 h, the most severe such `event` (id, route, status, impact score and label, max delay) |
+| `events.json` | events that started in the last `EXPORT_WINDOW_DAYS` (30): times, peak delay, threshold, impact score/label/signals, recovery, affected stations with coordinates, linked alerts, `sentences`, `summary`, and the path of the detail file; plus the event and impact rules |
+| `events/<event_id>.json` | per-minute series from 30 minutes before the event to its recovery window (`t`, `delay_min`, `traffic_mph`, `traffic_base_mph`, `camera_vehicles(_base)`, `camera_persons(_base)`, `bikes(_base)`, `impact`), averaged into at most `EXPORT_MAX_POINTS` (120) points; and `nearby` stations, cameras (with the event's latest counts), Citi Bike stations and road links (simplified to at most about 40 points) |
+
+Detail files of events that left the window are deleted. A typical export with a
+few events is around 100-150 KB in total. The Pages workflow runs the export from
+the data branch at deploy time, so the JSON is never committed.
+
+## Static site (M2, offline)
+
+`ripple site` writes `site/index.html` and `site/charts/<event_id>.png` for
+offline use; the M4 dashboard replaces it for publishing.

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import duckdb
@@ -437,28 +438,110 @@ def surface_series(
         else pd.DataFrame()
     )
 
-    for frame in (tg, bg):
+    cams = cameras_near(con, focal_station_ids, settings.neighbor_radius_m)
+    cg = _camera_series(con, settings, baselines, cams, start, end)
+
+    for frame in (tg, bg, cg):
         if not frame.empty:
             out = out.merge(frame.reset_index(), on="minute_utc", how="left")
-    for col in (
-        "traffic_speed_mph",
-        "traffic_n_links",
-        "traffic_speed_cmp",
-        "traffic_baseline_mph",
-        "traffic_n_cmp",
-        "traffic_n_ok",
-        "bikes_available",
-        "bikes_n_stations",
-        "bikes_cmp",
-        "bikes_baseline",
-        "bikes_n_cmp",
-        "bikes_n_ok",
-    ):
+    for col in SURFACE_COLUMNS:
         if col not in out.columns:
             out[col] = np.nan
     out.attrs["n_links_nearby"] = len(links)
     out.attrs["n_bike_stations_nearby"] = len(bikes)
+    out.attrs["camera_ids"] = cams
     return out
+
+
+SURFACE_COLUMNS = (
+    "traffic_speed_mph",
+    "traffic_n_links",
+    "traffic_speed_cmp",
+    "traffic_baseline_mph",
+    "traffic_n_cmp",
+    "traffic_n_ok",
+    "bikes_available",
+    "bikes_n_stations",
+    "bikes_cmp",
+    "bikes_baseline",
+    "bikes_n_cmp",
+    "bikes_n_ok",
+    "camera_vehicles",
+    "camera_persons",
+    "camera_n_cameras",
+    "camera_vehicles_cmp",
+    "camera_persons_cmp",
+    "camera_vehicles_baseline",
+    "camera_persons_baseline",
+    "camera_objects_cmp",
+    "camera_objects_baseline",
+    "camera_n_cmp",
+    "camera_n_ok",
+)
+
+
+def cameras_near(
+    con: duckdb.DuckDBPyConnection, station_ids: list[str], radius_m: float
+) -> list[str]:
+    """Camera ids within the radius of any of the stations (M3 station mapping)."""
+    if not station_ids:
+        return []
+    df = con.execute(
+        "SELECT DISTINCT camera_id FROM camera_station_map "
+        "WHERE list_contains($ids, station_id) AND distance_m <= $r ORDER BY camera_id",
+        {"ids": [str(s) for s in station_ids], "r": float(radius_m)},
+    ).df()
+    return df["camera_id"].tolist()
+
+
+def _camera_series(con, settings: Settings, baselines: pd.DataFrame, cams: list[str], start, end):
+    """Per minute: vehicles and people at nearby cameras, with matched baselines."""
+    c = entity_filled(
+        con,
+        "camera_counts_ok",
+        "camera_id",
+        "observed_utc",
+        ["vehicles", "persons"],
+        cams,
+        start,
+        end,
+        settings.camera_fill_max_age_min,
+    )
+    if c.empty:
+        return pd.DataFrame()
+    c = lookup(baselines, "camera_vehicles", c, settings.baseline_slot_min).rename(
+        columns={"baseline": "base_v", "baseline_confidence": "conf_v", "baseline_n_days": "days_v"}
+    )
+    c = lookup(baselines, "camera_persons", c, settings.baseline_slot_min).rename(
+        columns={"baseline": "base_p", "baseline_confidence": "conf_p", "baseline_n_days": "days_p"}
+    )
+    c["vehicles"] = c["vehicles"].astype(float)
+    c["persons"] = c["persons"].astype(float)
+    c["has_value"] = c["vehicles"].notna()
+    c["cmp"] = c["has_value"] & c["base_v"].notna() & c["base_p"].notna()
+    c["ok"] = c["cmp"] & (c["conf_v"] == CONFIDENCE_OK) & (c["conf_p"] == CONFIDENCE_OK)
+    c["v_cmp"] = c["vehicles"].where(c["cmp"])
+    c["p_cmp"] = c["persons"].where(c["cmp"])
+    c["bv_cmp"] = c["base_v"].where(c["cmp"])
+    c["bp_cmp"] = c["base_p"].where(c["cmp"])
+
+    def total(s):
+        return s.sum(min_count=1)
+
+    g = c.groupby("minute_utc").agg(
+        camera_vehicles=("vehicles", total),
+        camera_persons=("persons", total),
+        camera_n_cameras=("has_value", "sum"),
+        camera_vehicles_cmp=("v_cmp", total),
+        camera_persons_cmp=("p_cmp", total),
+        camera_vehicles_baseline=("bv_cmp", total),
+        camera_persons_baseline=("bp_cmp", total),
+        camera_n_cmp=("cmp", "sum"),
+        camera_n_ok=("ok", "sum"),
+    )
+    g["camera_objects_cmp"] = g["camera_vehicles_cmp"] + g["camera_persons_cmp"]
+    g["camera_objects_baseline"] = g["camera_vehicles_baseline"] + g["camera_persons_baseline"]
+    return g
 
 
 def _confidence(n_ok: pd.Series, n_cmp: pd.Series) -> str:
@@ -514,6 +597,28 @@ def summarize_surface(series: pd.DataFrame, start, end) -> dict:
         )
     else:
         out["bikes_change"] = out["bikes_change_pct"] = None
+
+    has_ccmp = (w["camera_n_cmp"].fillna(0) > 0).any()
+    out["camera_n_cameras"] = (
+        int(w["camera_n_cmp" if has_ccmp else "camera_n_cameras"].fillna(0).max()) if len(w) else 0
+    )
+    out["camera_vehicles"] = mean("camera_vehicles_cmp" if has_ccmp else "camera_vehicles")
+    out["camera_persons"] = mean("camera_persons_cmp" if has_ccmp else "camera_persons")
+    objects = w["camera_objects_cmp"] if has_ccmp else w["camera_vehicles"] + w["camera_persons"]
+    out["camera_objects"] = round(float(objects.mean()), 1) if objects.notna().any() else None
+    out["camera_objects_baseline"] = mean("camera_objects_baseline") if has_ccmp else None
+    out["camera_baseline_confidence"] = _confidence(
+        w["camera_n_ok"].fillna(0), w["camera_n_cmp"].fillna(0)
+    )
+    if out["camera_objects"] is not None and out["camera_objects_baseline"]:
+        out["camera_change_pct"] = round(
+            (out["camera_objects"] - out["camera_objects_baseline"])
+            / out["camera_objects_baseline"]
+            * 100,
+            1,
+        )
+    else:
+        out["camera_change_pct"] = None
     return out
 
 
@@ -526,15 +631,130 @@ def stored_events(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     return con.execute("SELECT * FROM events").df()
 
 
+CameraHook = Callable[[str, list], dict | None]
+
+
+CAMERA_COUNT_GRACE_MIN = 2
+
+
+def event_camera_counts(con: duckdb.DuckDBPyConnection, cams: list[str], start, end) -> list[dict]:
+    """Latest valid count per nearby camera inside the event window (numbers only)."""
+    if not cams:
+        return []
+    df = con.execute(
+        """
+        SELECT camera_id, observed_utc, car, bus, truck, person FROM camera_counts_ok
+        WHERE list_contains($ids, camera_id) AND observed_utc >= $start AND observed_utc < $end
+        QUALIFY row_number() OVER (PARTITION BY camera_id ORDER BY observed_utc DESC) = 1
+        ORDER BY camera_id
+        """,
+        {"ids": cams, "start": pd.Timestamp(start), "end": pd.Timestamp(end)},
+    ).df()
+    return [
+        {
+            "camera_id": r.camera_id,
+            "observed_utc": pd.Timestamp(r.observed_utc),
+            **{k: int(getattr(r, k)) for k in ("car", "bus", "truck", "person")},
+        }
+        for r in df.itertuples(index=False)
+    ]
+
+
+def surface_impact(
+    con: duckdb.DuckDBPyConnection,
+    settings: Settings,
+    baselines: pd.DataFrame,
+    focal: list[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    now_ts: pd.Timestamp,
+) -> tuple[dict, pd.DataFrame]:
+    """Surface context, impact score and recovery for one event.
+
+    The series covers the event and up to ``impact_recovery_window_min`` minutes
+    after it (never beyond now), so the recovery of the surface can be observed.
+    """
+    from .impact import SignalInput, impact_score, impact_series, surface_recovery
+
+    ext_end = min(end + pd.Timedelta(minutes=settings.impact_recovery_window_min), now_ts)
+    ext_end = max(ext_end, end)
+    series = surface_series(con, settings, baselines, focal, start, ext_end)
+    surface = summarize_surface(series, start, end)
+    inputs = {
+        "traffic": SignalInput(
+            surface["traffic_speed_mph"],
+            surface["traffic_baseline_mph"],
+            surface["traffic_baseline_confidence"],
+        ),
+        "camera": SignalInput(
+            surface["camera_objects"],
+            surface["camera_objects_baseline"],
+            surface["camera_baseline_confidence"],
+        ),
+        "bikes": SignalInput(
+            surface["bikes_available"],
+            surface["bikes_baseline"],
+            surface["bikes_baseline_confidence"],
+        ),
+    }
+    res = impact_score(inputs, settings)
+    series["impact_score"] = impact_series(series, res.used, settings)
+    out = {
+        **surface,
+        "impact_score": res.score,
+        "impact_signals_used": res.used,
+        "impact_detail": json.dumps(
+            {"signals": res.detail(), "rule": settings.impact_rule()}, sort_keys=True, default=str
+        ),
+        "impact_peak_score": None,
+        "impact_peak_utc": None,
+        "surface_recovered_utc": None,
+        "surface_recovery_status": "unknown",
+        "surface_checked_until_utc": None,
+        "camera_ids": series.attrs.get("camera_ids", []),
+        # Counting during the run can cross a minute boundary: allow a short grace period.
+        "camera_counts": event_camera_counts(
+            con,
+            series.attrs.get("camera_ids", []),
+            start,
+            end + pd.Timedelta(minutes=CAMERA_COUNT_GRACE_MIN),
+        ),
+    }
+    window = series[(series["minute_utc"] >= start) & (series["minute_utc"] < end)]
+    if res.score is not None and window["impact_score"].notna().any():
+        peak_idx = window["impact_score"].idxmax()
+        out["impact_peak_score"] = float(window.loc[peak_idx, "impact_score"])
+        out["impact_peak_utc"] = pd.Timestamp(window.loc[peak_idx, "minute_utc"])
+        if out["impact_peak_score"] < settings.impact_recovery_threshold:
+            out["surface_recovery_status"] = "no_impact"
+        else:
+            rec = surface_recovery(
+                series["minute_utc"], series["impact_score"], out["impact_peak_utc"], settings
+            )
+            out["surface_recovered_utc"] = rec
+            out["surface_recovery_status"] = "recovered" if rec is not None else "not_yet"
+        # Last minute with a usable impact value: "not recovered by" refers to it (not
+        # to the run time), so the text stops changing once the recovery window ends.
+        scored = series.loc[series["impact_score"].notna(), "minute_utc"]
+        out["surface_checked_until_utc"] = pd.Timestamp(scored.max())
+    return out, series
+
+
 def process_events(
     con: duckdb.DuckDBPyConnection,
     settings: Settings,
     baselines: pd.DataFrame,
     now: dt.datetime,
     run_id: str,
+    camera_hook: CameraHook | None = None,
 ) -> pd.DataFrame:
-    """Detect events in the lookback window and build one new version per event."""
-    from .explain import explain  # local import: explain depends on event fields
+    """Detect events in the lookback window and build one new version per event.
+
+    ``camera_hook(event_id, station_ids)`` is called for ongoing events only (most
+    severe first) before their surface context is computed, so live camera counts
+    made by the hook are included.
+    """
+    from .explain import explain_sentences
 
     now_ts = pd.Timestamp(now.replace(tzinfo=None) if now.tzinfo else now).floor("min")
     window_start = now_ts - pd.Timedelta(hours=settings.event_lookback_hours)
@@ -543,27 +763,40 @@ def process_events(
     stored = stored_events(con)
     merged, to_close = merge_with_stored(detected, stored, settings, now_ts)
 
-    rows = []
+    prepared = []
     for event_id, start, d in merged:
         st = d.stats()
-        end = d.end
-        stations = affected_stations(con, d.route_id, start, end, settings.event_threshold_min)
+        stations = affected_stations(con, d.route_id, start, d.end, settings.event_threshold_min)
         focal = stations["station_id"].head(settings.event_context_stations).tolist()
+        prepared.append((event_id, pd.Timestamp(start), d, st, stations, focal))
+
+    if camera_hook is not None:
+        ongoing = [p for p in prepared if p[2].status == STATUS_ONGOING and p[5]]
+        for event_id, _start, _d, _st, _stations, focal in sorted(
+            ongoing, key=lambda p: -(p[3]["peak_delay_min"] or 0.0)
+        ):
+            camera_hook(event_id, focal)
+        if ongoing:
+            from .storage import register_camera_views
+
+            register_camera_views(con, settings.data_dir)  # see counts written just now
+
+    rows = []
+    for event_id, start, d, st, stations, focal in prepared:
+        end = d.end
         alerts = link_alerts(con, d.route_id, start, end, stations["station_id"].tolist())
-        surface = summarize_surface(
-            surface_series(con, settings, baselines, focal, start, end), start, end
-        )
+        surface, _series = surface_impact(con, settings, baselines, focal, start, end, now_ts)
         row = {
-            "bucket_utc": pd.Timestamp(start).floor("min"),
+            "bucket_utc": start.floor("min"),
             "computed_utc": now_ts,
             "run_id": run_id,
             "event_id": event_id,
             "route_id": d.route_id,
             "status": d.status,
             "end_reason": d.end_reason,
-            "start_utc": pd.Timestamp(start),
+            "start_utc": start,
             "end_utc": end,
-            "duration_min": (end - pd.Timestamp(start)).total_seconds() / 60.0,
+            "duration_min": (end - start).total_seconds() / 60.0,
             "metric": settings.event_metric,
             "threshold_min": settings.event_threshold_min,
             "min_minutes": settings.event_min_minutes,
@@ -579,24 +812,28 @@ def process_events(
             **st,
             **surface,
         }
-        row["summary"], cited = explain(row)
-        row["cited_metrics"] = json.dumps(cited, sort_keys=True)
+        _finish(row, explain_sentences)
         rows.append(row)
     for old in to_close:
         row = dict(old)
-        row.update(
-            computed_utc=now_ts,
-            run_id=run_id,
-            status=STATUS_ENDED,
-            end_reason=END_DATA_GAP,
-        )
-        row["summary"], cited = explain(row)
-        row["cited_metrics"] = json.dumps(cited, sort_keys=True)
+        row.update(computed_utc=now_ts, run_id=run_id, status=STATUS_ENDED, end_reason=END_DATA_GAP)
+        _finish(row, explain_sentences)
         rows.append(row)
     # Only store a new version when something about the event changed.
     latest = {} if stored.empty else {r["event_id"]: r for r in stored.to_dict("records")}
     rows = [r for r in rows if fingerprint(r) != fingerprint(latest.get(r["event_id"]))]
     return pd.DataFrame(rows)
+
+
+def _finish(row: dict, explain_sentences) -> None:
+    """Attach the rule-based explanation (sentences + the metrics each one cites)."""
+    sentences = explain_sentences(row)
+    row["summary"] = " ".join(s["text"] for s in sentences)
+    cited: dict = {}
+    for s in sentences:
+        cited.update(s["metrics"])
+    row["cited_metrics"] = json.dumps(cited, sort_keys=True)
+    row["explanation"] = json.dumps(sentences, sort_keys=True)
 
 
 _VOLATILE = {"computed_utc", "run_id", "bucket_utc", "date"}
