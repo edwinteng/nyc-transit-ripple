@@ -89,10 +89,13 @@ async function getJSON(path) {
 function renderStatus(status) {
   const list = document.getElementById("status-list");
   list.replaceChildren();
-  const generated = status.generated_utc;
-  document.getElementById("last-update").textContent =
-    `Last update: ${localDay(generated)} ${localTime(generated)} ET (${ago(generated)}). ` +
-    "Times are New York time.";
+  // "Last update" is when the pipeline last collected data, not when this page was built:
+  // the page is rebuilt from stored data, so its build time says nothing about freshness.
+  const collected = status.last_pipeline_run_utc;
+  document.getElementById("last-update").textContent = collected
+    ? `Last update: data collected ${localDay(collected)} ${localTime(collected)} ET ` +
+      `(${ago(collected)}). Times are New York time.`
+    : "No data has been collected yet.";
   for (const s of status.sources) {
     const [word, icon] = STATUS_TEXT[s.status] || [s.status, "?"];
     const age = s.data_age_min === null ? "" : ` · data ${ago(s.data_utc)}`;
@@ -105,11 +108,13 @@ function renderStatus(status) {
     list.append(chip);
   }
   const banner = document.getElementById("stale-banner");
-  const ageMin = (Date.now() - new Date(generated).getTime()) / 60000;
+  const ageMin = collected ? (Date.now() - new Date(collected).getTime()) / 60000 : Infinity;
   if (ageMin > STALE_PAGE_MIN) {
     banner.hidden = false;
-    banner.textContent = `Data may be out of date: the last update was ${ago(generated)}. ` +
-      "Values below are not current conditions.";
+    banner.textContent = collected
+      ? `Data may be out of date: it was last collected ${ago(collected)}. ` +
+        "Values below are not current conditions."
+      : "No data has been collected yet.";
   }
 }
 
