@@ -166,3 +166,70 @@ def test_cli_replay_query_lines_and_compact(tmp_path, capsys, monkeypatch):
     assert "compacted 0 partition(s)" in capsys.readouterr().out
 
     assert main(["ingest", *common, "--feeds", "nope"]) == 2
+
+
+def test_cli_analysis_commands_on_stored_data(tmp_path, capsys, monkeypatch):
+    """baselines -> events -> site -> prune, as the workflow runs them."""
+    import pandas as pd
+
+    from transit_ripple.storage import write_table
+
+    monkeypatch.chdir(tmp_path)
+    data = tmp_path / "data"
+    t0 = pd.Timestamp("2026-11-30 14:00")
+    rows = []
+    for i, v in enumerate([8, 9, 12, 11, 10, 9, 8, 2, 1]):
+        t = t0 + pd.Timedelta(minutes=i)
+        rows.append(
+            {
+                "bucket_utc": t,
+                "observed_utc": t,
+                "fetched_utc": t,
+                "run_id": "r",
+                "feed_id": "ace",
+                "route_id": "A",
+                "direction": "S",
+                "status": "ok",
+                "n_trips_measured": 4,
+                "delay_median_min": float(v),
+                "delay_max_min": v + 3.0,
+            }
+        )
+    write_table(data, "line_minute", pd.DataFrame(rows), "r")
+    old = pd.Timestamp("2026-10-01 12:00")
+    write_table(
+        data,
+        "bike_minute",
+        pd.DataFrame(
+            [
+                {
+                    "bucket_utc": old,
+                    "observed_utc": old,
+                    "fetched_utc": old,
+                    "run_id": "r",
+                    "station_id": "s1",
+                    "bikes_available": 3,
+                }
+            ]
+        ),
+        "r",
+    )
+    common = ["--data-dir", str(data)]
+    now = ["--now", "2026-11-30T14:09:00+00:00"]
+
+    assert main(["baselines", *common, *now]) == 0
+    assert "recomputed" in capsys.readouterr().out
+    assert main(["baselines", *common, *now]) == 0
+    assert "fresh; not recomputed" in capsys.readouterr().out
+
+    assert main(["events", *common, *now]) == 0
+    out = capsys.readouterr().out
+    assert "1 event version(s) written" in out and "A-20261130T1400Z [ended]" in out
+
+    assert main(["site", *common, *now]) == 0
+    assert (data / "site" / "index.html").exists()
+    assert (data / "site" / "charts" / "A-20261130T1400Z.png").exists()
+    capsys.readouterr()
+
+    assert main(["prune", *common, *now]) == 0
+    assert "removed 1 partition(s) older than 35 days" in capsys.readouterr().out

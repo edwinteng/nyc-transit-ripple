@@ -475,3 +475,89 @@ def test_source_record_report_integration():
     assert report.to_dict()["sources"][1]["coverage"] == 0.2
     assert q.gap_minutes(None, 100, 15) is None
     assert q.gap_minutes(0, 600, 15) is None and q.gap_minutes(0, 1200, 15) == 20.0
+
+
+def test_bikes_discovery_follows_gbfs_versions_to_the_highest_supported_version(tmp_path):
+    """Production path: the official endpoint is GBFS 1.1 and lists newer versions."""
+    v11 = gbfs_doc(
+        {
+            "station_information": "https://x/1.1/station_information.json",
+            "station_status": "https://x/1.1/station_status.json",
+            "gbfs_versions": "https://x/gbfs_versions.json",
+        },
+        version="1.1",
+    )
+    versions = json.dumps(
+        {
+            "data": {
+                "versions": [
+                    {"version": "v1.1", "url": "https://x/1.1/gbfs.json"},
+                    {"version": "v2.3", "url": "https://x/2.3/gbfs.json"},
+                ]
+            }
+        }
+    ).encode()
+    v23 = gbfs_doc(
+        {
+            "station_information": "https://x/2.3/station_information.json",
+            "station_status": "https://x/2.3/station_status.json",
+        }
+    )
+    status = status_doc(int(NOW) - 10, [st("s1", 5, 50, int(NOW) - 30)])
+    fetch = ScriptedFetcher(
+        {
+            "citibikenyc.com/gbfs/gbfs.json": v11,
+            "gbfs_versions": versions,
+            "2.3/gbfs.json": v23,
+            "2.3/station_information": info_doc(),
+            "2.3/station_status": status,
+        },
+        NOW,
+    )
+    state = PipelineState()
+    out = BikesSource(Settings(data_dir=tmp_path), fetch, clock=lambda: NOW).run(
+        "r", state, tmp_path
+    )
+    disc = state.sources["bike_status"]["discovery"]
+    assert disc["version"] == "2.3"
+    assert disc["station_status"] == "https://x/2.3/station_status.json"
+    assert {r.source: r.status for r in out.records} == {
+        "bike_discovery": q.STATUS_OK,
+        "bike_info": q.STATUS_OK,
+        "bike_status": q.STATUS_OK,
+    }
+    assert "1.1/station_status" not in " ".join(c[1] for c in fetch.calls)
+
+
+def test_bikes_discovery_failure_uses_cache_or_reports_outage(tmp_path):
+    s = Settings(data_dir=tmp_path, bike_info_max_age_hours=1)
+    down = ScriptedFetcher({"gbfs.json": None}, NOW)
+    out = BikesSource(s, down, clock=lambda: NOW).run("r", PipelineState(), tmp_path)
+    assert {r.source: r.status for r in out.records} == {
+        "bike_discovery": q.STATUS_OUTAGE,
+        "bike_status": q.STATUS_OUTAGE,
+    }
+
+    # An expired cached discovery is still used when re-discovery fails.
+    cached = {
+        "at": NOW - 7200,
+        "version": "2.3",
+        "station_information": "https://x/station_information.json",
+        "station_status": "https://x/station_status.json",
+    }
+    state = PipelineState(sources={"bike_status": {"discovery": cached, "info_ts": NOW}})
+    merge_reference(
+        tmp_path, "bike_stations", parse_station_information(info_doc()).stations, "station_id"
+    )
+    fetch = ScriptedFetcher(
+        {
+            "gbfs.json": None,
+            "station_status": status_doc(int(NOW) - 10, [st("s1", 5, 50, int(NOW) - 30)]),
+        },
+        NOW,
+    )
+    out = BikesSource(s, fetch, clock=lambda: NOW).run("r", state, tmp_path)
+    by_source = {r.source: r for r in out.records}
+    assert by_source["bike_discovery"].notes == {"using_cached_discovery": True}
+    assert by_source["bike_status"].status == q.STATUS_OK
+    assert len(out.tables["bike_minute"]) == 1
