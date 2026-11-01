@@ -3,6 +3,7 @@
 Each signal is compared with its same-weekday / same-time-of-day baseline:
 
 - ``traffic``: drop of the average nearby traffic speed (slower = more impact);
+- ``bus``: drop of the average speed of buses on route segments nearby (M5);
 - ``camera``: increase of vehicles + people counted by nearby cameras;
 - ``bikes``: drop of Citi Bikes available nearby (riders switching to bikes).
 
@@ -25,7 +26,7 @@ import pandas as pd
 
 from .config import Settings
 
-SIGNALS = ("traffic", "camera", "bikes")
+SIGNALS = ("traffic", "bus", "camera", "bikes")
 CONFIDENCE_RANK = {"none": 0, "low": 1, "ok": 2}
 
 STATUS_USED = "used"
@@ -67,6 +68,7 @@ class ImpactResult:
 def weights(settings: Settings) -> dict[str, float]:
     return {
         "traffic": settings.impact_weight_traffic,
+        "bus": settings.impact_weight_bus,
         "camera": settings.impact_weight_camera,
         "bikes": settings.impact_weight_bikes,
     }
@@ -84,6 +86,8 @@ def sub_score(signal: str, pct: float, settings: Settings) -> float:
     """0-100 sub-score of a percentage change vs. baseline."""
     if signal == "traffic":
         raw = -pct / settings.impact_traffic_full_drop_pct
+    elif signal == "bus":
+        raw = -pct / settings.impact_bus_full_drop_pct
     elif signal == "camera":
         raw = pct / settings.impact_camera_full_increase_pct
     elif signal == "bikes":
@@ -133,6 +137,7 @@ def impact_score(inputs: dict[str, SignalInput], settings: Settings) -> ImpactRe
 # Per-minute columns of the surface series: (observed, baseline) per signal.
 SERIES_COLUMNS = {
     "traffic": ("traffic_speed_cmp", "traffic_baseline_mph"),
+    "bus": ("bus_speed_cmp", "bus_baseline_mph"),
     "camera": ("camera_objects_cmp", "camera_objects_baseline"),
     "bikes": ("bikes_cmp", "bikes_baseline"),
 }

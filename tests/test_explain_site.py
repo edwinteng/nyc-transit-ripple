@@ -198,7 +198,7 @@ def test_numbers_round_half_up_like_the_dashboard():
                 "traffic_n_links": 0,
                 "bikes_n_stations": 0,
             },
-            "No fresh traffic, camera or Citi Bike data was available within 500 m.",
+            "No fresh traffic, bus, camera or Citi Bike data was available within 500 m.",
         ),
     ],
 )

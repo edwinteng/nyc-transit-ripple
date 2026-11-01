@@ -126,6 +126,13 @@ class Pipeline:
                     line_frames.append(out.lines)
                 if out.jumps:
                     report.delay_jumps.extend(out.jumps)
+            for source in self.sources:
+                # Sources that need several snapshots per run (buses) take one per cycle.
+                if hasattr(source, "poll"):
+                    try:
+                        source.poll()
+                    except Exception:  # noqa: BLE001 - one source must not sink the run
+                        log.exception("Polling source %s failed", source.name)
             report.polls_completed += 1
             if batches is None and poll_index < n_polls - 1:
                 self.sleep(max(0.0, interval_s - (self.clock() - cycle_start)))
@@ -167,6 +174,7 @@ class Pipeline:
             for name, (frame, key) in out.references.items():
                 merge_reference(self.data_dir, name, frame, key)
                 references_changed = True
+            references_changed |= out.references_changed
         if self.sources:
             tables["quality_source"] = _source_quality_frame(report.sources)
 
@@ -429,6 +437,7 @@ def refresh_neighbors(
         read_reference(data_dir, "traffic_links"),
         read_reference(data_dir, "bike_stations"),
         radius_m,
+        read_reference(data_dir, "bus_stops"),
     )
     write_reference(data_dir, "station_neighbors", neighbors)
     return neighbors

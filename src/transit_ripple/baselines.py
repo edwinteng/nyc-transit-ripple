@@ -35,6 +35,7 @@ METRICS = {
         "docks_available",
         "is_installed AND is_returning AND report_age_s <= {bike_stale}",
     ),
+    "bus_speed_mph": ("bus_minute", "segment_id", "bucket_utc", "speed_mph", "n_samples > 0"),
     # Cameras are only counted during events (and manual camera runs), so these
     # baselines fill slowly and lean towards disrupted conditions; see docs.
     "camera_vehicles": ("camera_counts_ok", "camera_id", "observed_utc", "vehicles", "TRUE"),

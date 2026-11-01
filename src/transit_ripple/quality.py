@@ -25,6 +25,8 @@ STATUS_INVALID = "invalid"  # undecodable payload or missing header timestamp
 STATUS_EMPTY = "empty"  # decodable but contains no trip updates
 STATUS_FUTURE = "time_jump_future"  # header timestamp ahead of the wall clock
 STATUS_BACKWARD = "time_jump_backward"  # header older than an already accepted snapshot
+# A source that cannot be used at all, e.g. its API key is missing or rejected (M5).
+STATUS_UNAVAILABLE = "unavailable"
 
 # Statuses for which the feed's lines are recorded as missing (never as normal).
 MISSING_STATUSES = frozenset(
@@ -337,7 +339,9 @@ def _iso(ts: float | None) -> str | None:
 
 
 # Statuses of non-subway sources reuse the snapshot vocabulary above.
-SOURCE_MISSING_STATUSES = frozenset({STATUS_STALE, STATUS_OUTAGE, STATUS_INVALID, STATUS_EMPTY})
+SOURCE_MISSING_STATUSES = frozenset(
+    {STATUS_STALE, STATUS_OUTAGE, STATUS_INVALID, STATUS_EMPTY, STATUS_UNAVAILABLE}
+)
 
 
 @dataclass

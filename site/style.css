@@ -51,6 +51,8 @@ a { color: var(--info); }
 .status-chip.stale .state, .status-chip.degraded .state { color: var(--stale); }
 .status-chip.missing { border-color: #ef4444; border-style: dotted; }
 .status-chip.missing .state { color: var(--missing); }
+.status-chip.unavailable { border-color: #ef4444; border-style: dotted; }
+.status-chip.unavailable .state { color: var(--missing); }
 .status-chip.on_demand, .status-chip.building { border-color: #93c5fd; }
 .status-chip.on_demand .state, .status-chip.building .state { color: var(--info); }
 .stale-banner {
@@ -146,6 +148,19 @@ a { color: var(--info); }
 .alerts { margin: .5rem 0; padding-left: 1.1rem; font-size: .9rem; }
 .signals { width: 100%; border-collapse: collapse; font-size: .85rem; margin: .4rem 0 .8rem; }
 .signals th, .signals td { border-bottom: 1px solid var(--border); padding: .25rem .4rem; text-align: left; }
+
+.card-reco { margin: .4rem 0 0; font-size: .88rem; padding: .35rem .5rem; background: #f0fdf4; border-radius: 6px; }
+.recos { margin: .6rem 0 1rem; }
+.recos h5 { margin: .6rem 0 .2rem; font-size: .9rem; }
+.reco-list { margin: 0; padding-left: 1.3rem; }
+.reco-list li { margin: .25rem 0 .5rem; }
+.reco-list li p { margin: .15rem 0 0; }
+.reco-list li.crowded p { text-decoration: none; color: var(--muted); }
+.reco-tags { display: flex; flex-wrap: wrap; gap: .3rem; font-size: .72rem; }
+.reco-type, .reco-conf, .reco-tag { padding: .05rem .4rem; border-radius: 4px; border: 1px solid var(--border); }
+.reco-type { font-weight: 700; }
+.reco-conf.conf-low, .reco-conf.conf-none { border-style: dashed; }
+.reco-tag.crowded { border-color: #b4360c; color: #8a2c0a; font-weight: 700; }
 
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; grid-template-areas: "map" "events" "detail"; padding: .6rem; }
