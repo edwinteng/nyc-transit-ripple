@@ -218,3 +218,77 @@ def line_1_trip(delay_s: int = 0, **kwargs) -> RtTrip:
         ("106N", at("10:05:00") + delay_s, at("10:05:00") + delay_s),
     ]
     return RtTrip("060000_1..N03R", stops=stops, **kwargs)
+
+
+# ------------------------------------------------------------------------------------
+# M2 sources
+# ------------------------------------------------------------------------------------
+
+
+@dataclass
+class RtAlert:
+    alert_id: str
+    alert_type: str = "Delays"
+    routes: tuple[str, ...] = ("1",)
+    stops: tuple[str, ...] = ()
+    periods: tuple[tuple[int | None, int | None], ...] = ()
+    header: str = "Northbound [1] trains are delayed"
+    created: int = 0
+    updated: int = 0
+
+
+def build_alerts_feed(header_ts: int, alerts: list[RtAlert]) -> bytes:
+    """Serialize an MTA-style alerts FeedMessage with the Mercury extension."""
+    s = schema()
+    msg = s.FeedMessage()
+    msg.header.gtfs_realtime_version = "2.0"
+    msg.header.timestamp = header_ts
+    for a in alerts:
+        ent = msg.entity.add()
+        ent.id = a.alert_id
+        al = ent.alert
+        for start, end in a.periods:
+            p = al.active_period.add()
+            if start is not None:
+                p.start = start
+            if end is not None:
+                p.end = end
+        for r in a.routes:
+            ie = al.informed_entity.add()
+            ie.agency_id = "MTASBWY"
+            ie.route_id = r
+        for st in a.stops:
+            ie = al.informed_entity.add()
+            ie.agency_id = "MTASBWY"
+            ie.stop_id = st
+        en = al.header_text.translation.add()
+        en.text, en.language = a.header, "en"
+        html_t = al.header_text.translation.add()
+        html_t.text, html_t.language = f"<p>{a.header}</p>", "en-html"
+        ext = al.Extensions[s.mercury_alert]
+        ext.alert_type = a.alert_type
+        ext.created_at = a.created or header_ts
+        ext.updated_at = a.updated or a.created or header_ts
+    return msg.SerializeToString()
+
+
+class ScriptedFetcher:
+    """UrlFetcher returning scripted responses keyed by (source, url-substring)."""
+
+    def __init__(self, responses: dict, now: float):
+        self.responses = responses  # key -> bytes | None | list of those (consumed in order)
+        self.now = now
+        self.calls: list[tuple[str, str, dict | None, dict | None]] = []
+
+    def __call__(self, source, url, params=None, headers=None):
+        from transit_ripple.feeds import FetchResult
+
+        self.calls.append((source, url, params, headers))
+        for key, value in self.responses.items():
+            if key in url or key == source:
+                if isinstance(value, list):
+                    value = value.pop(0) if len(value) > 1 else value[0]
+                if value is None:
+                    return FetchResult(source, url, self.now, None, error="ConnectionError")
+                return FetchResult(source, url, self.now, value, http_status=200, elapsed_s=0.01)
+        return FetchResult(source, url, self.now, None, http_status=404, error="HTTP 404")

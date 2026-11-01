@@ -39,6 +39,8 @@ Fetcher = Callable[[list[FeedSpec]], list[FetchResult]]
 
 
 def make_session(settings: Settings) -> requests.Session:
+    """HTTP session with retries. Credentials are never set session-wide: each
+    request adds only the header meant for its own host (see ``mta_headers``)."""
     session = requests.Session()
     retry = Retry(
         total=2,
@@ -50,41 +52,52 @@ def make_session(settings: Settings) -> requests.Session:
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.mount("http://", HTTPAdapter(max_retries=retry))
     session.headers["User-Agent"] = settings.user_agent
-    if settings.mta_api_key:
-        # Not required for subway feeds; supported for forward compatibility.
-        session.headers["x-api-key"] = settings.mta_api_key
     return session
 
 
-def fetch_one(spec: FeedSpec, session: requests.Session, timeout: float) -> FetchResult:
+def mta_headers(settings: Settings) -> dict[str, str]:
+    """Headers for MTA endpoints only (the optional key must not reach other hosts)."""
+    # Not required for subway feeds; supported for forward compatibility.
+    return {"x-api-key": settings.mta_api_key} if settings.mta_api_key else {}
+
+
+def fetch_url(
+    source: str,
+    url: str,
+    session: requests.Session,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+) -> FetchResult:
+    """GET a URL and wrap the outcome; errors never raise and never include headers."""
     start = time.time()
     try:
-        resp = session.get(spec.url, timeout=timeout)
+        resp = session.get(url, timeout=timeout, headers=headers or None, params=params)
         now = time.time()
         if resp.status_code != 200:
             return FetchResult(
-                spec.feed_id,
-                spec.url,
+                source,
+                url,
                 now,
                 None,
                 http_status=resp.status_code,
                 error=f"HTTP {resp.status_code}",
                 elapsed_s=now - start,
             )
-        return FetchResult(
-            spec.feed_id, spec.url, now, resp.content, http_status=200, elapsed_s=now - start
-        )
+        return FetchResult(source, url, now, resp.content, http_status=200, elapsed_s=now - start)
     except requests.RequestException as exc:
         now = time.time()
         # Keep the message short and free of request headers.
-        return FetchResult(
-            spec.feed_id,
-            spec.url,
-            now,
-            None,
-            error=f"{type(exc).__name__}",
-            elapsed_s=now - start,
-        )
+        return FetchResult(source, url, now, None, error=type(exc).__name__, elapsed_s=now - start)
+
+
+def fetch_one(
+    spec: FeedSpec,
+    session: requests.Session,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+) -> FetchResult:
+    return fetch_url(spec.feed_id, spec.url, session, timeout, headers=headers)
 
 
 class HttpFetcher:
@@ -97,7 +110,13 @@ class HttpFetcher:
     def __call__(self, specs: list[FeedSpec]) -> list[FetchResult]:
         with ThreadPoolExecutor(max_workers=max(1, len(specs))) as pool:
             futures = [
-                pool.submit(fetch_one, spec, self.session, self.settings.http_timeout_s)
+                pool.submit(
+                    fetch_one,
+                    spec,
+                    self.session,
+                    self.settings.http_timeout_s,
+                    mta_headers(self.settings),
+                )
                 for spec in specs
             ]
             return [f.result() for f in futures]

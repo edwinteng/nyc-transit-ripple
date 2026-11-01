@@ -5,7 +5,7 @@ import pytest
 from builders import at, build_feed, line_1_trip, write_static_zip
 from transit_ripple.cli import main
 from transit_ripple.config import SUBWAY_FEEDS, Settings, load_dotenv, resolve_feeds
-from transit_ripple.feeds import make_session, raw_file_name
+from transit_ripple.feeds import make_session, mta_headers, raw_file_name
 
 
 def test_all_subway_lines_are_covered():
@@ -62,7 +62,9 @@ def test_settings_from_env(monkeypatch, tmp_path):
     # Secrets never show up in reprs, logs or reports.
     assert "secret-value" not in repr(s)
     assert "secret-value" not in str(s.thresholds())
-    assert make_session(s).headers["x-api-key"] == "secret-value"
+    # Credentials are scoped to their host: never on the shared session.
+    assert "x-api-key" not in make_session(s).headers
+    assert mta_headers(s) == {"x-api-key": "secret-value"}
 
 
 def test_settings_invalid_env_value(monkeypatch):
@@ -74,6 +76,7 @@ def test_settings_invalid_env_value(monkeypatch):
 def test_no_api_key_header_by_default(monkeypatch):
     monkeypatch.delenv("MTA_API_KEY", raising=False)
     assert "x-api-key" not in make_session(Settings.from_env()).headers
+    assert mta_headers(Settings.from_env()) == {}
 
 
 def test_load_dotenv_does_not_override_existing_env(monkeypatch, tmp_path):
@@ -123,7 +126,7 @@ def test_cli_replay_query_lines_and_compact(tmp_path, capsys, monkeypatch):
     )
     out = capsys.readouterr().out
     assert "Overall status: **ok**" in out
-    assert Path(tmp_path / "report.md").read_text().startswith("## Subway ingestion quality report")
+    assert Path(tmp_path / "report.md").read_text().startswith("## Ingestion quality report")
 
     assert (
         main(
