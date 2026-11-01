@@ -1,0 +1,34 @@
+# Secrets: never commit local environment files.
+.env
+.env.*
+!.env.example
+
+# Pipeline output and caches (raw feeds, static GTFS, Parquet, reports).
+data/
+datastore/
+.cache/
+*.pb
+*.pb.gz
+*.zip
+*.parquet
+*.duckdb
+*.duckdb.wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

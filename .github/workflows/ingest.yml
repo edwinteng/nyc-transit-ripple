@@ -1,0 +1,95 @@
+name: Ingest subway feeds
+
+# Fetch all NYCT subway GTFS-Realtime feeds every 5 minutes (GitHub may delay
+# scheduled runs), compute delays, run quality checks and publish aggregates.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      polls:
+        description: "Snapshots per run"
+        default: "3"
+      interval:
+        description: "Seconds between snapshots"
+        default: "60"
+      save_raw:
+        description: "Also upload raw feed payloads as an artifact"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ingest-subway
+  cancel-in-progress: false
+
+env:
+  DATA_BRANCH: ${{ vars.RIPPLE_DATA_BRANCH || 'data' }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  RIPPLE_DATA_DIR: datastore
+  RIPPLE_STATIC_DIR: .cache/static
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # push aggregates to the data branch
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install
+        run: uv sync --frozen --no-dev
+
+      - name: Static GTFS cache slot (refreshed every 6 hours)
+        id: slot
+        run: echo "slot=$(date -u +%Y%m%d)-$(( 10#$(date -u +%H) / 6 ))" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/static
+          key: static-gtfs-v1-${{ steps.slot.outputs.slot }}
+          restore-keys: static-gtfs-v1-
+
+      - name: Check out data branch
+        run: scripts/data_branch.sh prepare datastore
+
+      - name: Ingest
+        env:
+          POLLS: ${{ inputs.polls || '3' }}
+          INTERVAL: ${{ inputs.interval || '60' }}
+          SAVE_RAW: ${{ inputs.save_raw && '1' || '' }}
+        run: >-
+          uv run --no-sync ripple ingest
+          --polls "$POLLS" --interval "$INTERVAL" ${SAVE_RAW:+--save-raw}
+          --report-md "$RUNNER_TEMP/quality-report.md"
+
+      - name: Compact previous days
+        run: uv run --no-sync ripple compact --tables line_minute,quality_feed
+
+      - name: Quality report summary
+        if: always()
+        run: cat "$RUNNER_TEMP/quality-report.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Publish aggregates to data branch
+        if: github.ref_name == github.event.repository.default_branch && vars.RIPPLE_PUBLISH_DATA != 'false'
+        run: scripts/data_branch.sh publish datastore "Ingest run ${{ github.run_id }}"
+
+      - name: Upload per-stop delays and reports (short-term)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            datastore/stop_delays/
+            datastore/reports/
+            datastore/raw/
+          retention-days: ${{ vars.RIPPLE_ARTIFACT_RETENTION_DAYS || 7 }}
+          if-no-files-found: warn
