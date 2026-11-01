@@ -218,3 +218,27 @@ def test_bus_stops_from_static_gtfs(tmp_path):
     assert list(stops.loc["1", "routes"]) == ["B63"]
     assert list(stops.loc["2", "routes"]) == ["B25", "B63"]
     assert stops.loc["2", "lat"] == 40.2
+
+
+def test_version_2_records_without_route_distances_give_no_speed():
+    """Bus Time's SIRI v2 omits Extensions.Distances; such records cannot be paired."""
+
+    def v2(t, from_stop):
+        a = activity("1", 1000.0, 1500.0, t)
+        call = a["MonitoredVehicleJourney"]["MonitoredCall"]
+        call.pop("Extensions")
+        call["DistanceFromStop"] = from_stop
+        return a
+
+    prev = frame([v2(T, 500.0)])
+    cur = frame([v2(T + pd.Timedelta(seconds=60), 200.0)])
+    assert prev["dist_along_m"].isna().all()
+    assert speed_samples(prev, cur, 20, 300, 60).empty
+
+
+def test_bus_source_requests_siri_version_1(tmp_path):
+    fetch = ScriptedFetch([(200, siri([activity("1", 1000.0, 1500.0, T)]))])
+    fetch.now = T.timestamp() + 1
+    src = BusSource(bus_settings(tmp_path, mta_bus_api_key="k"), fetch, clock=lambda: T.timestamp())
+    src.poll()
+    assert "version" not in fetch.calls[0]  # v1 is the default and carries the distances

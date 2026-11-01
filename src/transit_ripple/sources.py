@@ -514,11 +514,9 @@ class BusSource:
         ):
             return
         self._last_request = now
-        params = {
-            "key": s.mta_bus_api_key,
-            "version": "2",
-            "VehicleMonitoringDetailLevel": "normal",
-        }
+        # SIRI version 1 (the default): version 2 responses omit Extensions.Distances
+        # (CallDistanceAlongRoute), without which no speed can be computed.
+        params = {"key": s.mta_bus_api_key, "VehicleMonitoringDetailLevel": "normal"}
         res = self.fetch(self.name, s.bus_siri_url, params, None)
         if res.http_status in (401, 403):
             self._auth_error = f"API key rejected (HTTP {res.http_status})"
