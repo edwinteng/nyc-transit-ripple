@@ -26,10 +26,17 @@ def _settings(args: argparse.Namespace) -> Settings:
 def cmd_ingest(args: argparse.Namespace) -> int:
     from .feeds import HttpFetcher, load_replay_batches
     from .pipeline import Pipeline
+    from .sources import build_sources
     from .static_gtfs import load_schedule
 
     settings = _settings(args)
-    feeds = resolve_feeds(args.feeds)
+    names = [n.strip() for n in args.sources.split(",") if n.strip()]
+    if args.replay and names != ["subway"]:
+        # Replays are offline: only saved subway payloads are reprocessed.
+        log.info("Replay mode: ingesting saved subway payloads only")
+        names = ["subway"]
+    feeds = resolve_feeds(args.feeds) if "subway" in names else []
+    sources = build_sources([n for n in names if n != "subway"], settings)
     schedule, info = load_schedule(settings, force_refresh=args.refresh_static)
     batches = None
     if args.replay:
@@ -44,6 +51,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         feeds,
         fetcher=HttpFetcher(settings),
         save_raw=args.save_raw,
+        sources=sources,
     )
     result = pipeline.run(polls=args.polls, interval_s=args.interval, batches=batches)
     md = result.report.to_markdown()
@@ -74,6 +82,82 @@ def cmd_compact(args: argparse.Namespace) -> int:
     for table in tables:
         done = compact(settings.data_dir, table, before)
         print(f"{table}: compacted {len(done)} partition(s) {' '.join(done)}".rstrip())
+    return 0
+
+
+def _now(args: argparse.Namespace) -> dt.datetime:
+    """Reference time (naive UTC): ``--now`` or the current time."""
+    raw = getattr(args, "now", None)
+    t = dt.datetime.fromisoformat(raw) if raw else dt.datetime.now(dt.UTC)
+    return t.astimezone(dt.UTC).replace(tzinfo=None) if t.tzinfo else t
+
+
+def cmd_neighbors(args: argparse.Namespace) -> int:
+    from .pipeline import refresh_neighbors
+    from .static_gtfs import load_schedule
+
+    settings = _settings(args)
+    schedule, _ = load_schedule(settings)
+    nb = refresh_neighbors(settings.data_dir, schedule.stops, settings.neighbor_radius_m)
+    counts = nb.groupby("neighbor_type")["station_id"].agg(["size", "nunique"])
+    print(counts.rename(columns={"size": "pairs", "nunique": "subway_stations"}).to_string())
+    return 0
+
+
+def cmd_baselines(args: argparse.Namespace) -> int:
+    from .baselines import refresh_baselines
+    from .storage import connect
+
+    settings = _settings(args)
+    con = connect(settings.data_dir)
+    changed, b = refresh_baselines(con, settings, _now(args), force=args.force)
+    print("recomputed" if changed else "baselines are fresh; not recomputed")
+    if len(b):
+        print(b.groupby(["metric", "confidence"]).size().rename("slots").to_string())
+    return 0
+
+
+def cmd_events(args: argparse.Namespace) -> int:
+    from .events import process_events
+    from .pipeline import make_run_id
+    from .storage import connect, read_reference, write_table
+
+    settings = _settings(args)
+    now = _now(args)
+    con = connect(settings.data_dir)
+    baselines = read_reference(settings.data_dir, "baselines")
+    run_id = make_run_id(now.replace(tzinfo=dt.UTC).timestamp())
+    events = process_events(con, settings, baselines, now, run_id)
+    write_table(settings.data_dir, "events", events, run_id)
+    print(f"{len(events)} event version(s) written")
+    for ev in events.to_dict("records"):
+        print(
+            f"- {ev['event_id']} [{ev['status']}] peak {ev['peak_delay_min']} min: {ev['summary']}"
+        )
+    return 0
+
+
+def cmd_site(args: argparse.Namespace) -> int:
+    from .site import build_site
+    from .storage import connect, read_reference
+
+    settings = _settings(args)
+    out = Path(args.out) if args.out else settings.data_dir / "site"
+    con = connect(settings.data_dir)
+    index = build_site(
+        con, settings, read_reference(settings.data_dir, "baselines"), out, _now(args)
+    )
+    print(f"Wrote {index}")
+    return 0
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    from .storage import prune
+
+    settings = _settings(args)
+    keep = args.keep_days if args.keep_days is not None else settings.bike_retention_days
+    removed = prune(settings.data_dir, args.table, keep, _now(args).date())
+    print(f"{args.table}: removed {len(removed)} partition(s) older than {keep} days")
     return 0
 
 
@@ -139,7 +223,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     ing = sub.add_parser("ingest", help="fetch subway feeds and store delays + quality report")
     common(ing)
-    ing.add_argument("--feeds", default="all", help="comma separated feed ids or 'all'")
+    ing.add_argument(
+        "--sources",
+        default="subway,alerts,traffic,bikes",
+        help="comma separated: subway, alerts, traffic, bikes (default: all)",
+    )
+    ing.add_argument("--feeds", default="all", help="subway feed ids (comma separated) or 'all'")
     ing.add_argument("--polls", type=int, default=1, help="snapshots to take in this run")
     ing.add_argument("--interval", type=float, default=30.0, help="seconds between snapshots")
     ing.add_argument("--save-raw", action="store_true", help="keep raw payloads under raw/")
@@ -183,6 +272,34 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--route", help="comma separated route ids")
     lp.add_argument("--format", choices=("table", "csv", "json"), default="table")
     lp.set_defaults(func=cmd_lines)
+
+    nbp = sub.add_parser("neighbors", help="recompute the 500 m spatial join")
+    common(nbp)
+    nbp.set_defaults(func=cmd_neighbors)
+
+    bp = sub.add_parser("baselines", help="weekday x time-of-day baselines (if stale)")
+    common(bp)
+    bp.add_argument("--force", action="store_true", help="recompute even if fresh")
+    bp.add_argument("--now", help="reference time, ISO (default: now)")
+    bp.set_defaults(func=cmd_baselines)
+
+    ep = sub.add_parser("events", help="detect delay events, link alerts, explain")
+    common(ep)
+    ep.add_argument("--now", help="reference time, ISO (default: now)")
+    ep.set_defaults(func=cmd_events)
+
+    sp = sub.add_parser("site", help="render event charts and index.html")
+    common(sp)
+    sp.add_argument("--out", help="output directory (default <data-dir>/site)")
+    sp.add_argument("--now", help="reference time, ISO (default: now)")
+    sp.set_defaults(func=cmd_site)
+
+    pp = sub.add_parser("prune", help="delete old partitions of a large table")
+    common(pp)
+    pp.add_argument("--table", default="bike_minute")
+    pp.add_argument("--keep-days", type=int, help="default: RIPPLE_BIKE_RETENTION_DAYS")
+    pp.add_argument("--now", help="reference time, ISO (default: now)")
+    pp.set_defaults(func=cmd_prune)
     return p
 
 
@@ -196,7 +313,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except ValueError as exc:
-        log.error("%s", exc)
+        # Configuration/input errors exit with 2; the traceback helps when it is a bug.
+        log.error("%s: %s", type(exc).__name__, exc, exc_info=args.verbose)
         return 2
 
 

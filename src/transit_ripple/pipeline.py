@@ -1,4 +1,8 @@
-"""One ingestion run: fetch -> parse -> quality checks -> delays -> Parquet + report."""
+"""One ingestion run: fetch -> parse -> quality checks -> delays -> Parquet + report.
+
+The subway feeds are polled ``polls`` times; the other sources (alerts, traffic,
+bikes) are fetched once per run after that, and the spatial join is refreshed.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,7 @@ import logging
 import time
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
@@ -17,10 +21,19 @@ from . import quality as q
 from .config import FeedSpec, Settings
 from .delays import compute_stop_delays, line_snapshot, trip_current_delays
 from .feeds import Fetcher, FetchResult, save_raw
+from .geo import station_neighbors, subway_stations
 from .realtime import FeedParseError, parse_feed
 from .state import PipelineState
 from .static_gtfs import MATCHED_METHODS, StaticInfo, StaticSchedule
-from .storage import bucket_of, date_partition, epoch_to_utc, write_table
+from .storage import (
+    bucket_of,
+    date_partition,
+    epoch_to_utc,
+    merge_reference,
+    read_reference,
+    write_reference,
+    write_table,
+)
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +51,7 @@ class RunResult:
     stop_delays: pd.DataFrame
     line_minute: pd.DataFrame
     quality_feed: pd.DataFrame
+    tables: dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 @dataclass
@@ -59,6 +73,7 @@ class Pipeline:
         save_raw: bool = False,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        sources: list | None = None,
     ):
         self.settings = settings
         self.schedule = schedule
@@ -70,6 +85,7 @@ class Pipeline:
         self.sleep = sleep
         self.data_dir = Path(settings.data_dir)
         self.state_path = self.data_dir / "state.json"
+        self.sources = sources or []
 
     # ------------------------------------------------------------------------------
 
@@ -128,12 +144,37 @@ class Pipeline:
         )
         lines = lines.drop(columns=["_is_ok"], errors="ignore")
         quality_feed = _quality_frame(report.records)
+        tables: dict[str, pd.DataFrame] = {
+            "stop_delays": stop_delays,
+            "line_minute": lines,
+            "quality_feed": quality_feed,
+            "station_minute": station_minute(stop_delays, run_id),
+        }
 
-        for table, frame in (
-            ("stop_delays", stop_delays),
-            ("line_minute", lines),
-            ("quality_feed", quality_feed),
-        ):
+        references_changed = False
+        for source in self.sources:
+            try:
+                out = source.run(run_id, state, self.data_dir)
+            except Exception as exc:  # noqa: BLE001 - one source must not sink the run
+                log.exception("Source %s failed", source.name)
+                rec = q.SourceRecord(run_id, source.name, "", self.clock())
+                rec.status, rec.detail = q.STATUS_INVALID, f"{type(exc).__name__}: {exc}"
+                report.sources.append(rec)
+                continue
+            report.sources.extend(out.records)
+            for table, frame in out.tables.items():
+                tables[table] = pd.concat([tables[table], frame]) if table in tables else frame
+            for name, (frame, key) in out.references.items():
+                merge_reference(self.data_dir, name, frame, key)
+                references_changed = True
+        if self.sources:
+            tables["quality_source"] = _source_quality_frame(report.sources)
+
+        neighbors_path = self.data_dir / "reference" / "station_neighbors.parquet"
+        if references_changed or (self.sources and not neighbors_path.exists()):
+            refresh_neighbors(self.data_dir, self.schedule.stops, self.settings.neighbor_radius_m)
+
+        for table, frame in tables.items():
             files = write_table(self.data_dir, table, frame, run_id)
             report.rows_written[table] = len(frame)
             report.files_written += [str(f.relative_to(self.data_dir)) for f in files]
@@ -145,7 +186,7 @@ class Pipeline:
 
         state.prune(report.finished_ts)
         state.save(self.state_path)
-        return RunResult(report, report_path, stop_delays, lines, quality_feed)
+        return RunResult(report, report_path, stop_delays, lines, quality_feed, tables)
 
     # ------------------------------------------------------------------------------
 
@@ -315,3 +356,60 @@ def _json_default(obj):
     if isinstance(obj, pd.Timestamp):
         return obj.isoformat()
     return str(obj)
+
+
+def station_minute(stop_delays: pd.DataFrame, run_id: str) -> pd.DataFrame:
+    """Observed train delays (``time_kind = actual``) per route x station x minute.
+
+    This small aggregate is kept long-term, so affected stations of an event can
+    be recomputed from history even though per-stop detail is short-lived.
+    """
+    if stop_delays.empty or "time_kind" not in stop_delays.columns:
+        return pd.DataFrame(columns=["bucket_utc"])
+    d = stop_delays[
+        stop_delays["time_kind"].eq("actual")
+        & stop_delays["delay_min"].notna()
+        & stop_delays["station_id"].notna()
+    ]
+    if d.empty:
+        return pd.DataFrame(columns=["bucket_utc"])
+    g = d.assign(delay=d["delay_min"].astype(float)).groupby(
+        ["bucket_utc", "feed_id", "route_id", "direction", "station_id"], dropna=False
+    )
+    out = g.agg(
+        observed_utc=("observed_utc", "max"),
+        stop_name=("stop_name", "first"),
+        n_trains=("trip_id", "nunique"),
+        delay_mean_min=("delay", "mean"),
+        delay_max_min=("delay", "max"),
+    ).reset_index()
+    out["delay_mean_min"] = out["delay_mean_min"].round(2)
+    out["delay_max_min"] = out["delay_max_min"].round(2)
+    out["run_id"] = run_id
+    return out
+
+
+def refresh_neighbors(data_dir: Path, stops: pd.DataFrame, radius_m: float) -> pd.DataFrame:
+    """Recompute the subway station -> traffic link / bike station spatial join."""
+    stations = subway_stations(stops)
+    write_reference(data_dir, "subway_stations", stations)
+    neighbors = station_neighbors(
+        stations,
+        read_reference(data_dir, "traffic_links"),
+        read_reference(data_dir, "bike_stations"),
+        radius_m,
+    )
+    write_reference(data_dir, "station_neighbors", neighbors)
+    return neighbors
+
+
+def _source_quality_frame(records: list[q.SourceRecord]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame(columns=["bucket_utc"])
+    df = pd.DataFrame([r.to_dict() for r in records])
+    df["fetched_utc"] = epoch_to_utc(df["fetched_ts"])
+    df["bucket_utc"] = bucket_of(df["fetched_ts"])
+    df["observed_utc"] = epoch_to_utc(df["observed_ts"])
+    df["notes"] = df["notes"].map(lambda d: json.dumps(d, sort_keys=True, default=str))
+    df["http_status"] = df["http_status"].astype("Int32")
+    return df

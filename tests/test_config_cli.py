@@ -5,7 +5,7 @@ import pytest
 from builders import at, build_feed, line_1_trip, write_static_zip
 from transit_ripple.cli import main
 from transit_ripple.config import SUBWAY_FEEDS, Settings, load_dotenv, resolve_feeds
-from transit_ripple.feeds import make_session, raw_file_name
+from transit_ripple.feeds import make_session, mta_headers, raw_file_name
 
 
 def test_all_subway_lines_are_covered():
@@ -62,7 +62,9 @@ def test_settings_from_env(monkeypatch, tmp_path):
     # Secrets never show up in reprs, logs or reports.
     assert "secret-value" not in repr(s)
     assert "secret-value" not in str(s.thresholds())
-    assert make_session(s).headers["x-api-key"] == "secret-value"
+    # Credentials are scoped to their host: never on the shared session.
+    assert "x-api-key" not in make_session(s).headers
+    assert mta_headers(s) == {"x-api-key": "secret-value"}
 
 
 def test_settings_invalid_env_value(monkeypatch):
@@ -74,6 +76,7 @@ def test_settings_invalid_env_value(monkeypatch):
 def test_no_api_key_header_by_default(monkeypatch):
     monkeypatch.delenv("MTA_API_KEY", raising=False)
     assert "x-api-key" not in make_session(Settings.from_env()).headers
+    assert mta_headers(Settings.from_env()) == {}
 
 
 def test_load_dotenv_does_not_override_existing_env(monkeypatch, tmp_path):
@@ -123,7 +126,7 @@ def test_cli_replay_query_lines_and_compact(tmp_path, capsys, monkeypatch):
     )
     out = capsys.readouterr().out
     assert "Overall status: **ok**" in out
-    assert Path(tmp_path / "report.md").read_text().startswith("## Subway ingestion quality report")
+    assert Path(tmp_path / "report.md").read_text().startswith("## Ingestion quality report")
 
     assert (
         main(
@@ -163,3 +166,70 @@ def test_cli_replay_query_lines_and_compact(tmp_path, capsys, monkeypatch):
     assert "compacted 0 partition(s)" in capsys.readouterr().out
 
     assert main(["ingest", *common, "--feeds", "nope"]) == 2
+
+
+def test_cli_analysis_commands_on_stored_data(tmp_path, capsys, monkeypatch):
+    """baselines -> events -> site -> prune, as the workflow runs them."""
+    import pandas as pd
+
+    from transit_ripple.storage import write_table
+
+    monkeypatch.chdir(tmp_path)
+    data = tmp_path / "data"
+    t0 = pd.Timestamp("2026-11-30 14:00")
+    rows = []
+    for i, v in enumerate([8, 9, 12, 11, 10, 9, 8, 2, 1]):
+        t = t0 + pd.Timedelta(minutes=i)
+        rows.append(
+            {
+                "bucket_utc": t,
+                "observed_utc": t,
+                "fetched_utc": t,
+                "run_id": "r",
+                "feed_id": "ace",
+                "route_id": "A",
+                "direction": "S",
+                "status": "ok",
+                "n_trips_measured": 4,
+                "delay_median_min": float(v),
+                "delay_max_min": v + 3.0,
+            }
+        )
+    write_table(data, "line_minute", pd.DataFrame(rows), "r")
+    old = pd.Timestamp("2026-10-01 12:00")
+    write_table(
+        data,
+        "bike_minute",
+        pd.DataFrame(
+            [
+                {
+                    "bucket_utc": old,
+                    "observed_utc": old,
+                    "fetched_utc": old,
+                    "run_id": "r",
+                    "station_id": "s1",
+                    "bikes_available": 3,
+                }
+            ]
+        ),
+        "r",
+    )
+    common = ["--data-dir", str(data)]
+    now = ["--now", "2026-11-30T14:09:00+00:00"]
+
+    assert main(["baselines", *common, *now]) == 0
+    assert "recomputed" in capsys.readouterr().out
+    assert main(["baselines", *common, *now]) == 0
+    assert "fresh; not recomputed" in capsys.readouterr().out
+
+    assert main(["events", *common, *now]) == 0
+    out = capsys.readouterr().out
+    assert "1 event version(s) written" in out and "A-20261130T1400Z [ended]" in out
+
+    assert main(["site", *common, *now]) == 0
+    assert (data / "site" / "index.html").exists()
+    assert (data / "site" / "charts" / "A-20261130T1400Z.png").exists()
+    capsys.readouterr()
+
+    assert main(["prune", *common, *now]) == 0
+    assert "removed 1 partition(s) older than 35 days" in capsys.readouterr().out

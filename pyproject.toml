@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nyc-transit-ripple"
-version = "0.1.0"
+version = "0.2.0"
 description = "NYC subway disruption ripple system: realtime subway ingestion, delay calculation and data quality checks (M1)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,7 @@ dependencies = [
     "pyarrow>=15",
     "duckdb>=1.1",
     "tzdata>=2024.1",
+    "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]

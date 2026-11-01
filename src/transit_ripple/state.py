@@ -18,6 +18,11 @@ class PipelineState:
     last_header_ts: dict[str, int] = field(default_factory=dict)
     # "feed|start_date|trip_id" -> [observed_ts, delay_min]
     trip_delays: dict[str, list[float]] = field(default_factory=dict)
+    # Other sources (M2): free-form JSON state per source, e.g. last good fetch time.
+    sources: dict[str, dict] = field(default_factory=dict)
+
+    def source(self, name: str) -> dict:
+        return self.sources.setdefault(name, {})
 
     @staticmethod
     def trip_key(feed_id: str, start_date: str | None, trip_id: str) -> str:
@@ -37,6 +42,8 @@ class PipelineState:
         return cls(
             last_header_ts={k: int(v) for k, v in raw.get("last_header_ts", {}).items()},
             trip_delays={k: list(v) for k, v in raw.get("trip_delays", {}).items()},
+            # Absent in M1 state files; starts empty.
+            sources={k: dict(v) for k, v in raw.get("sources", {}).items()},
         )
 
     def prune(self, now_ts: float) -> None:
@@ -49,6 +56,7 @@ class PipelineState:
             "version": STATE_VERSION,
             "last_header_ts": dict(sorted(self.last_header_ts.items())),
             "trip_delays": dict(sorted(self.trip_delays.items())),
+            "sources": dict(sorted(self.sources.items())),
         }
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, separators=(",", ":")))
