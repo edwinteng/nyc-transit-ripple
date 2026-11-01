@@ -41,6 +41,19 @@ jobs:
               print("RESULT: MTA_BUS_API_KEY is not set as a repository secret")
               sys.exit(1)
           print(f"Key present (length {len(key)})")
+          # Shape only (never the key): surrounding quotes/whitespace, hyphens, hex digits.
+          stripped = key.strip().strip('"').strip("'").strip()
+          print(
+              "Shape: starts/ends with whitespace:", key[:1].isspace(), key[-1:].isspace(),
+              "| starts/ends with a quote:", key[:1] in "'\"", key[-1:] in "'\"",
+              "| hyphens:", key.count("-"),
+              "| hex+hyphen only:", all(c in "0123456789abcdefABCDEF-" for c in stripped),
+              "| length after removing quotes/whitespace:", len(stripped),
+          )
+          if stripped != key:
+              r = requests.get("https://bustime.mta.info/api/siri/vehicle-monitoring.json",
+                               params={"key": stripped, "LineRef": "MTA NYCT_B63"}, timeout=30)
+              print(f"SIRI with quotes/whitespace removed: HTTP {r.status_code}")
           ok = True
 
           def get(name, url, params):
