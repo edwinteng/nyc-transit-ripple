@@ -54,12 +54,37 @@ jobs:
               print(f"{name}: HTTP {r.status_code}, {len(r.content)} bytes, {ms:.0f} ms")
               return r
 
+          def body(r):
+              # Response text with the key redacted (GitHub also masks the secret).
+              return r.text[:300].replace(key, "***").replace("\n", " ")
+
+          # 0. Is the key really needed? GTFS-RT without a key.
+          r0 = requests.get("https://gtfsrt.prod.obanyc.com/vehiclePositions", timeout=30)
+          print(f"GTFS-RT vehiclePositions WITHOUT key: HTTP {r0.status_code}, {len(r0.content)} bytes")
+
+          # SIRI variants and the OneBusAway API, to locate a 403.
+          for label, url, params in [
+              ("SIRI vehicle-monitoring v1 B63", "https://bustime.mta.info/api/siri/vehicle-monitoring.json",
+               {"LineRef": "MTA NYCT_B63"}),
+              ("SIRI stop-monitoring 308209", "https://bustime.mta.info/api/siri/stop-monitoring.json",
+               {"version": "2", "MonitoringRef": "308209"}),
+              ("OBA agencies-with-coverage", "https://bustime.mta.info/api/where/agencies-with-coverage.json", {}),
+          ]:
+              r = get(label, url, params)
+              if r is not None and not r.ok:
+                  print(f"  body: {body(r)}")
+          r = requests.get("https://bustime.mta.info/api/siri/vehicle-monitoring.json",
+                           params={"LineRef": "MTA NYCT_B63"}, timeout=30)
+          print(f"SIRI WITHOUT key: HTTP {r.status_code}; body: {r.text[:200]!r}")
+
           # 1. SIRI VehicleMonitoring for one route (B63).
           r = get(
               "SIRI vehicle-monitoring B63",
               "https://bustime.mta.info/api/siri/vehicle-monitoring.json",
               {"version": "2", "LineRef": "MTA NYCT_B63", "VehicleMonitoringDetailLevel": "minimum"},
           )
+          if r is not None and not r.ok:
+              print(f"  body: {body(r)}")
           if r is not None and r.ok:
               d = r.json()["Siri"]["ServiceDelivery"]
               if "VehicleMonitoringDelivery" in d:
