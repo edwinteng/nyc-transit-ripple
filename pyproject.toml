@@ -18,13 +18,23 @@ dependencies = [
     "tzdata>=2024.1",
 ]
 
+[project.optional-dependencies]
+# Camera counting (M3): ONNX Runtime (MIT) runs the Apache-2.0 YOLOX detector on CPU.
+vision = [
+    "onnxruntime>=1.17",
+    "pillow>=10",
+]
+
 [project.scripts]
 ripple = "transit_ripple.cli:main"
+ripple-cameras = "transit_ripple.cameras.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    # Camera tests decode JPEGs; the model itself is mocked, so no ONNX Runtime.
+    "pillow>=10",
 ]
 
 [tool.hatch.build.targets.wheel]

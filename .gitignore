@@ -14,6 +14,13 @@ datastore/
 *.duckdb
 *.duckdb.wal
 
+# Camera frames (only ever saved locally for labeling) and model weights.
+labeling/
+*.jpg
+*.jpeg
+*.png
+*.onnx
+
 # Python
 __pycache__/
 *.py[cod]

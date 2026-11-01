@@ -6,6 +6,14 @@ traffic, bus, Citi Bike, camera and weather data on one timeline, detects subway
 disruptions, measures their surface "ripple", and recommends whether a rider
 should go, switch modes or wait. See the full [design document](docs/design.md).
 
+> **Traffic cameras (M3, in progress):** camera frames are turned into counts of
+> cars, buses, trucks and people (numbers only; frames are never stored and there
+> is no face or license plate recognition). The detector is **YOLOX-S** by Megvii,
+> whose code and pretrained weights are **Apache-2.0**, run with ONNX Runtime (MIT).
+> Ultralytics YOLO models are **not** used because they are AGPL-3.0. Weights are
+> downloaded at runtime and cached, never committed. See
+> [docs/cameras.md](docs/cameras.md).
+
 **Status: Milestone M1** — project skeleton, subway ingestion and data quality checks.
 
 ## What M1 does
