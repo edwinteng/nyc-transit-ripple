@@ -65,3 +65,11 @@ def test_impact_is_never_color_only():
     css = read("style.css")
     for band in ("severe", "high", "moderate", "low", "unknown"):
         assert f".impact-badge.impact-{band}" in css
+
+
+def test_last_update_reflects_data_collection_not_page_build():
+    """The page is rebuilt from stored data, so freshness must come from the pipeline run."""
+    js = read("app.js")
+    body = js[js.index("function renderStatus") : js.index("// ---------- event list")]
+    assert "status.last_pipeline_run_utc" in body
+    assert "generated_utc" not in body
