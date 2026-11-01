@@ -78,7 +78,7 @@ def cmd_compact(args: argparse.Namespace) -> int:
 
     settings = _settings(args)
     before = dt.date.fromisoformat(args.before) if args.before else dt.datetime.now(dt.UTC).date()
-    tables = args.tables.split(",") if args.tables else list(TABLES)
+    tables = args.tables.split(",") if args.tables else [*TABLES, "camera_counts"]
     for table in tables:
         done = compact(settings.data_dir, table, before)
         print(f"{table}: compacted {len(done)} partition(s) {' '.join(done)}".rstrip())
@@ -98,7 +98,7 @@ def cmd_neighbors(args: argparse.Namespace) -> int:
 
     settings = _settings(args)
     schedule, _ = load_schedule(settings)
-    nb = refresh_neighbors(settings.data_dir, schedule.stops, settings.neighbor_radius_m)
+    nb = refresh_neighbors(settings.data_dir, schedule.stops, settings.neighbor_radius_m, schedule)
     counts = nb.groupby("neighbor_type")["station_id"].agg(["size", "nunique"])
     print(counts.rename(columns={"size": "pairs", "nunique": "subway_stations"}).to_string())
     return 0
@@ -118,7 +118,8 @@ def cmd_baselines(args: argparse.Namespace) -> int:
 
 
 def cmd_events(args: argparse.Namespace) -> int:
-    from .events import process_events
+    from .events import STATUS_ONGOING, process_events
+    from .integration import EventCameraHook, save_events_report
     from .pipeline import make_run_id
     from .storage import connect, read_reference, write_table
 
@@ -127,13 +128,27 @@ def cmd_events(args: argparse.Namespace) -> int:
     con = connect(settings.data_dir)
     baselines = read_reference(settings.data_dir, "baselines")
     run_id = make_run_id(now.replace(tzinfo=dt.UTC).timestamp())
-    events = process_events(con, settings, baselines, now, run_id)
+    use_cameras = settings.event_cameras_enabled and not args.no_cameras
+    hook = EventCameraHook(settings, now=now.replace(tzinfo=dt.UTC)) if use_cameras else None
+    events = process_events(con, settings, baselines, now, run_id, camera_hook=hook)
     write_table(settings.data_dir, "events", events, run_id)
-    print(f"{len(events)} event version(s) written")
+    report = {
+        "run_id": run_id,
+        "now_utc": now.isoformat(),
+        "event_versions_written": len(events),
+        "ongoing": int((events["status"] == STATUS_ONGOING).sum()) if len(events) else 0,
+        "cameras": hook.report() if hook else {"enabled": False},
+    }
+    path = save_events_report(settings.data_dir, run_id, now, report)
+    print(f"{len(events)} event version(s) written; report {path}")
+    if hook:
+        cams = report["cameras"]
+        counted, cap = cams["cameras_counted"], cams["cap"]
+        print(f"Cameras: {counted} counted (cap {cap}); {cams['status_counts']}")
+        for err in cams["errors"]:
+            print(f"  warning: {err}")
     for ev in events.to_dict("records"):
-        print(
-            f"- {ev['event_id']} [{ev['status']}] peak {ev['peak_delay_min']} min: {ev['summary']}"
-        )
+        print(f"- {ev['event_id']} [{ev['status']}] impact {ev['impact_score']}: {ev['summary']}")
     return 0
 
 
@@ -148,6 +163,21 @@ def cmd_site(args: argparse.Namespace) -> int:
         con, settings, read_reference(settings.data_dir, "baselines"), out, _now(args)
     )
     print(f"Wrote {index}")
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    from .export import export_site_data
+    from .storage import connect, read_reference
+
+    settings = _settings(args)
+    out = Path(args.out)
+    con = connect(settings.data_dir)
+    sizes = export_site_data(
+        con, settings, read_reference(settings.data_dir, "baselines"), out, _now(args)
+    )
+    total = sum(sizes.values())
+    print(f"Wrote {len(sizes)} JSON file(s) to {out} ({total / 1024:.0f} KB)")
     return 0
 
 
@@ -286,6 +316,9 @@ def build_parser() -> argparse.ArgumentParser:
     ep = sub.add_parser("events", help="detect delay events, link alerts, explain")
     common(ep)
     ep.add_argument("--now", help="reference time, ISO (default: now)")
+    ep.add_argument(
+        "--no-cameras", action="store_true", help="do not count cameras for ongoing events"
+    )
     ep.set_defaults(func=cmd_events)
 
     sp = sub.add_parser("site", help="render event charts and index.html")
@@ -293,6 +326,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", help="output directory (default <data-dir>/site)")
     sp.add_argument("--now", help="reference time, ISO (default: now)")
     sp.set_defaults(func=cmd_site)
+
+    xp = sub.add_parser("export", help="write the dashboard JSON (status, stations, events)")
+    common(xp)
+    xp.add_argument("--out", default="site/data", help="output folder (default site/data)")
+    xp.add_argument("--now", help="reference time, ISO (default: now)")
+    xp.set_defaults(func=cmd_export)
 
     pp = sub.add_parser("prune", help="delete old partitions of a large table")
     common(pp)

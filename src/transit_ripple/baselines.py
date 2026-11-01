@@ -35,6 +35,10 @@ METRICS = {
         "docks_available",
         "is_installed AND is_returning AND report_age_s <= {bike_stale}",
     ),
+    # Cameras are only counted during events (and manual camera runs), so these
+    # baselines fill slowly and lean towards disrupted conditions; see docs.
+    "camera_vehicles": ("camera_counts_ok", "camera_id", "observed_utc", "vehicles", "TRUE"),
+    "camera_persons": ("camera_counts_ok", "camera_id", "observed_utc", "persons", "TRUE"),
 }
 
 CONFIDENCE_OK = "ok"
@@ -161,8 +165,12 @@ def lookup(
             baseline_n_days=pd.Series(dtype=float),
             baseline_confidence=pd.Series(dtype=object),
         )
+    # Safe to call repeatedly on the same grid (e.g. one lookup per metric).
+    out = out.drop(columns=["weekday", "slot_start_min"], errors="ignore")
     slots = local_slot(out["minute_utc"], slot_min)
     out = pd.concat([out, slots], axis=1)
+    if "metric" not in baselines.columns:  # no baselines computed yet
+        baselines = read_reference_schema()
     b = baselines[baselines["metric"] == metric][
         ["entity_id", "weekday", "slot_start_min", "mean", "n_days", "confidence"]
     ].rename(

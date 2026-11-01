@@ -414,7 +414,14 @@ def test_process_events_end_to_end(tmp_path):
     write_context(tmp_path)
     rows = line_rows("A", "S", [8, 9, 12, 11, 10, 9, 8, 2, 1])
     write_table(tmp_path, "line_minute", pd.DataFrame(rows), "r")
-    settings = Settings(data_dir=tmp_path, event_min_minutes=5, event_lookback_hours=2)
+    # The surface is followed for 2 min after the event, so a later run at
+    # now + 5 min sees exactly the same data and must not write a new version.
+    settings = Settings(
+        data_dir=tmp_path,
+        event_min_minutes=5,
+        event_lookback_hours=2,
+        impact_recovery_window_min=2,
+    )
     con = connect(tmp_path)
     from transit_ripple.storage import read_reference
 
@@ -428,9 +435,24 @@ def test_process_events_end_to_end(tmp_path):
     assert list(ev["focal_station_ids"]) == ["A41", "A42"]
     assert ev["n_linked_alerts"] == 2
     assert ev["traffic_change_pct"] == -25.0
-    assert "A train delays: from 09:00 to 09:07 ET on Mon Nov 30 (7 min)" in ev["summary"]
-    assert "25% below the usual 20.0 mph" in ev["summary"]
-    assert 'MTA alert (Delays): "Delays on the A"' in ev["summary"]
+    assert ev["summary"] == (
+        "A trains ran a median of up to 12.0 min late for 7 min, from 09:00 to 09:07 ET "
+        "on Mon Nov 30, worst at Jay St-MetroTech (12.0 min). Within 500 m of the "
+        "worst-hit stations, nearby traffic was 25% slower than usual for this weekday "
+        "and time (surface impact 63/100), and it had not recovered by 09:09 ET."
+    )
+    # Traffic -25% of a 40% full drop -> 62.5; the bike baseline is low-confidence
+    # and there are no cameras, so the score is renormalized over traffic alone.
+    assert ev["impact_score"] == 62.5
+    assert list(ev["impact_signals_used"]) == ["traffic"]
+    detail = json.loads(ev["impact_detail"])["signals"]
+    assert detail["bikes"]["status"] == "low_confidence"
+    assert detail["camera"]["status"] == "no_data"
+    assert ev["surface_recovery_status"] == "not_yet"
+    sentences = json.loads(ev["explanation"])
+    assert len(sentences) == 2
+    for sentence in sentences:
+        assert uncited_numbers(sentence["text"], sentence["metrics"]) == []
     assert uncited_numbers(ev["summary"], json.loads(ev["cited_metrics"])) == []
 
     # Stored, then re-detected on the next run: nothing changed, so no new version.
@@ -449,3 +471,58 @@ def test_process_events_end_to_end(tmp_path):
     )
     assert later["event_id"].tolist() == ["A-20261130T1400Z"]
     assert later["peak_delay_min"].tolist() == [15.0]
+
+
+def test_camera_hook_runs_for_ongoing_events_and_counts_are_stored(tmp_path):
+    from transit_ripple.cameras.storage import write_counts
+    from transit_ripple.cameras.storage import write_reference as write_camera_reference
+
+    write_context(tmp_path)
+    write_camera_reference(
+        tmp_path,
+        "camera_station_map",
+        pd.DataFrame(
+            {
+                "station_id": ["A41", "A42"],
+                "camera_id": ["c1", "c9"],
+                "camera_name": ["Adams St", "Far"],
+                "distance_m": [60.0, 900.0],  # c9 is outside the 500 m radius
+            }
+        ),
+    )
+    settings = Settings(data_dir=tmp_path, event_min_minutes=5, event_lookback_hours=2)
+    calls = []
+
+    def hook(event_id, station_ids):
+        calls.append((event_id, list(station_ids)))
+        t = T0 + pd.Timedelta(minutes=6, seconds=20)
+        counts = {"car": 3, "bus": 1, "truck": 0, "person": 4}
+        row = {"bucket_utc": t.floor("min"), "observed_utc": t, "run_id": "cam", "status": "ok"}
+        write_counts(settings.data_dir, pd.DataFrame([{**row, "camera_id": "c1", **counts}]), "cam")
+        return {"cameras_counted": 1}
+
+    # Ended event: no camera request.
+    rows = line_rows("A", "S", [8, 9, 12, 11, 10, 9, 8, 2, 1])
+    write_table(tmp_path, "line_minute", pd.DataFrame(rows), "r")
+    now = (T0 + pd.Timedelta(minutes=9)).to_pydatetime()
+    ended = process_events(connect(tmp_path), settings, pd.DataFrame(), now, "r1", camera_hook=hook)
+    assert ended["status"].tolist() == [STATUS_ENDED] and calls == []
+
+    # Ongoing event (same data, observed earlier): one request for the focal stations.
+    live = tmp_path / "ongoing"
+    write_context(live)
+    mapping = pd.read_parquet(tmp_path / "reference" / "camera_station_map.parquet")
+    write_camera_reference(live, "camera_station_map", mapping)
+    rows = line_rows("A", "S", [8, 9, 12, 11, 10, 9, 8])
+    write_table(live, "line_minute", pd.DataFrame(rows), "r")
+    settings = Settings(data_dir=live, event_min_minutes=5, event_lookback_hours=2)
+    now = (T0 + pd.Timedelta(minutes=6)).to_pydatetime()
+    events = process_events(connect(live), settings, pd.DataFrame(), now, "r2", camera_hook=hook)
+    ev = events.iloc[0].to_dict()
+    assert ev["status"] == STATUS_ONGOING
+    assert calls == [("A-20261130T1400Z", ["A41", "A42"])]
+    assert list(ev["camera_ids"]) == ["c1"]
+    (count,) = list(ev["camera_counts"])
+    assert (count["camera_id"], count["car"], count["bus"], count["person"]) == ("c1", 3, 1, 4)
+    assert ev["camera_n_cameras"] == 1 and ev["camera_objects"] == 8.0
+    assert ev["camera_baseline_confidence"] == "none"

@@ -1,4 +1,4 @@
-# Traffic cameras and vision counts (M3)
+# Traffic cameras and vision counts (M3, used by events since M4)
 
 Self-contained module: `src/transit_ripple/cameras/` (tests in `tests/cameras/`).
 It turns public NYC traffic camera frames into **numbers only**: counts of cars,
@@ -89,8 +89,14 @@ or `none`), `status`, `observed_utc`, `age_s` and the four counts. If the
 timestamp is within 5 minutes of now (or omitted), the cameras are counted live
 and the counts are stored; otherwise the stored count nearest to the timestamp
 (within 5 minutes) is returned. Frames are never stored, so the past can only be
-answered from counts made at that time. After M2 is merged, event detection can
-call this for an event's most affected stations (live while the event is ongoing).
+answered from counts made at that time.
+
+`count_near_stations(station_ids, max_cameras=N)` does the same for several
+stations at once: each camera is counted once, cameras are chosen round-robin over
+the stations (nearest first), and cameras over the cap get `status = skipped_cap`
+without a request. Since M4, `ripple events` uses it for every ongoing delay event
+(most severe first) with a shared cap per run; see "Cameras during events" in
+[data-model.md](data-model.md#cameras-during-events-m4).
 
 ## Commands
 

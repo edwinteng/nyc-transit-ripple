@@ -200,9 +200,37 @@ class Settings:
     # Surface series are forward-filled at most this many minutes.
     surface_fill_max_age_min: int = 20
 
-    # --- static site --------------------------------------------------------------------
+    # --- cameras during events (M4) ------------------------------------------------------
+    # Count cameras near the affected stations of ongoing events only, and never more
+    # than this many cameras per run (the camera API allows about one per second).
+    event_cameras_enabled: bool = True
+    event_camera_max_per_run: int = 30
+    # Camera counts are forward-filled at most this many minutes (one count per run).
+    camera_fill_max_age_min: int = 10
+
+    # --- surface impact score (M4) --------------------------------------------------------
+    # Weights of the three signals; they are renormalized over the signals available.
+    impact_weight_traffic: float = 0.4
+    impact_weight_camera: float = 0.3
+    impact_weight_bikes: float = 0.3
+    # Change vs. baseline that maps to a sub-score of 100 (linear, clipped to 0-100).
+    impact_traffic_full_drop_pct: float = 40.0
+    impact_camera_full_increase_pct: float = 100.0
+    impact_bikes_full_drop_pct: float = 30.0
+    # Lowest baseline confidence a signal may have to be used: "ok" or "low".
+    impact_min_confidence: str = "ok"
+    # The surface has recovered once the per-minute score stays below this...
+    impact_recovery_threshold: float = 20.0
+    # ...for this many consecutive minutes after the event.
+    impact_recovery_minutes: int = 10
+    # Minutes after the event end that are analysed for recovery.
+    impact_recovery_window_min: int = 120
+
+    # --- static site and export ---------------------------------------------------------
     site_max_events: int = 30
     site_chart_padding_min: int = 30
+    export_window_days: int = 30
+    export_max_points: int = 120
 
     http_timeout_s: float = 20.0
     user_agent: str = "nyc-transit-ripple/0.2 (+https://github.com/edwinteng/nyc-transit-ripple)"
@@ -224,6 +252,10 @@ class Settings:
     def thresholds(self) -> dict[str, float | int]:
         """Quality thresholds, recorded in every report for reproducibility."""
         return {name: getattr(self, name) for name in THRESHOLD_FIELDS}
+
+    def impact_rule(self) -> dict[str, float | int | str]:
+        """The configurable impact score definition, recorded with every event."""
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name.startswith("impact_")}
 
     def event_rule(self) -> dict[str, float | int | str]:
         """The configurable delay event definition, stored with every event."""

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' https://unpkg.com 'unsafe-inline'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; object-src 'none'; base-uri 'self'">
+  <title>NYC Subway Disruption Ripple</title>
+  <meta name="description" content="When the NYC subway is disrupted, does the street network break down too? Live subway delay events with nearby traffic speed, camera counts and Citi Bike availability.">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#events-heading">Skip to the event list</a>
+  <header class="site-header">
+    <div class="title">
+      <h1>NYC Subway Disruption Ripple</h1>
+      <p class="tagline">When the subway breaks down, does the street break down too?</p>
+    </div>
+    <section aria-labelledby="status-heading" class="status">
+      <h2 id="status-heading" class="visually-hidden">Data status</h2>
+      <p id="last-update" class="last-update">Loading data&hellip;</p>
+      <ul id="status-list" class="status-list"></ul>
+      <p id="stale-banner" class="stale-banner" role="alert" hidden></p>
+    </section>
+  </header>
+
+  <main class="layout">
+    <section class="panel events-panel" aria-labelledby="events-heading">
+      <h2 id="events-heading">Delay events <span id="event-count" class="muted"></span></h2>
+      <p class="muted small">Events of the last 30 days, ongoing first. Select one to see it on the map and in detail.</p>
+      <div id="event-list" class="event-list" role="list"></div>
+    </section>
+
+    <section class="panel map-panel" aria-labelledby="map-heading">
+      <h2 id="map-heading">Map</h2>
+      <div id="map" class="map" role="region" aria-label="Map of subway stations, highlighted stations in recent events, and nearby cameras and Citi Bike stations of the selected event"></div>
+      <div class="legend" aria-label="Map legend">
+        <span class="legend-item"><span class="dot station"></span>Subway station</span>
+        <span class="legend-item"><span class="badge-pin impact-high" aria-hidden="true">72</span>Station in an event (number = impact score, "?" = not enough data)</span>
+        <span class="legend-item"><span class="pin-camera" aria-hidden="true">C</span>Camera</span>
+        <span class="legend-item"><span class="pin-bike" aria-hidden="true">B</span>Citi Bike station</span>
+        <span class="legend-item"><span class="line-traffic" aria-hidden="true"></span>Traffic speed road link</span>
+      </div>
+    </section>
+
+    <section class="panel detail-panel" aria-labelledby="detail-heading" aria-live="polite">
+      <h2 id="detail-heading">Event detail</h2>
+      <div id="detail" class="detail"><p class="muted">Select an event to see its timeline.</p></div>
+    </section>
+  </main>
+
+  <section class="panel about" aria-labelledby="about-heading">
+    <h2 id="about-heading">About</h2>
+    <p>
+      When the New York City subway is disrupted, riders spill onto the streets at the same time,
+      switching to buses, ride-hailing or Citi Bike, and the most obvious alternative can become
+      congested in turn. This dashboard tracks that ripple using only free public data: MTA subway
+      GTFS-Realtime feeds and service alerts, the MTA static schedule, NYC DOT real-time traffic speeds,
+      NYC DOT traffic camera images, and Citi Bike station status. Every few minutes a GitHub Actions
+      pipeline computes how late trains are against the schedule; a line has a delay event when its median
+      train delay stays at or above 5 minutes for 5 consecutive minutes. For the most affected stations
+      it compares traffic speed, camera counts of vehicles and people (an open-source YOLOX detector that
+      keeps numbers only, never images) and Citi Bike availability within 500 m with the usual level for
+      the same weekday and time of day, and combines them into a 0-100 surface impact score. The
+      explanations are written by fixed templates and only quote numbers present in the data. Limitations:
+      scheduled runs can be delayed, some trips cannot be matched to the schedule, traffic sensors cover
+      mainly highways and arterials and are sometimes hours behind, cameras undercount small or dark
+      scenes, and baselines need several weeks of history before comparisons are reliable. Differences from
+      usual conditions describe what happened near a disruption; they do not prove that the disruption
+      caused them.
+    </p>
+    <p class="muted small">
+      Source code: <a href="https://github.com/edwinteng/nyc-transit-ripple">github.com/edwinteng/nyc-transit-ripple</a>.
+      Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors.
+      Data: MTA, NYC DOT / NYC Open Data, NYCTMC, Citi Bike (Lyft). Not affiliated with any of them.
+    </p>
+  </section>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js"
+          integrity="sha384-zYPBGXwO4633CABX/5Spf6emCKUJCfoOkhOMYyxMsatqQZPnDblmmOewfjsIVWCM" crossorigin="anonymous"></script>
+  <script src="app.js"></script>
+</body>
+</html>

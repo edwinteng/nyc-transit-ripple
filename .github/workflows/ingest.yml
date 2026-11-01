@@ -3,10 +3,13 @@ name: Ingest and analyse
 # Every 5 minutes (GitHub may delay scheduled runs):
 #   subway feeds (3 snapshots), service alerts, NYC DOT traffic speed and
 #   Citi Bike status -> quality report -> baselines (at most daily) -> delay
-#   events with rule-based summaries -> charts + index.html -> data branch.
+#   events -> camera counts near ongoing events (capped) -> surface impact score
+#   and rule-based explanations -> data branch.
 # Slower cadences are handled inside the run: Citi Bike station information and
-# GBFS discovery are refreshed daily, the static GTFS every 6 hours, baselines
-# daily, and compaction/retention once the day has rolled over.
+# GBFS discovery are refreshed daily, the static GTFS every 6 hours, the camera
+# inventory weekly, baselines daily, and compaction/retention once the day has
+# rolled over. The "Deploy dashboard" workflow runs after this one and publishes
+# the dashboard to GitHub Pages.
 #
 # Security: read-only token by default; only this job can write, and only to the
 # data branch. Third-party actions are pinned to commit SHAs. This workflow never
@@ -39,11 +42,12 @@ env:
   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
   RIPPLE_DATA_DIR: datastore
   RIPPLE_STATIC_DIR: .cache/static
+  RIPPLE_MODEL_CACHE_DIR: .cache/models
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: write # push aggregates to the data branch
     steps:
@@ -54,8 +58,8 @@ jobs:
           enable-cache: true
           python-version: "3.12"
 
-      - name: Install
-        run: uv sync --frozen --no-dev
+      - name: Install (with the vision extra for event camera counts)
+        run: uv sync --frozen --no-dev --extra vision
 
       - name: Static GTFS cache slot (refreshed every 6 hours)
         id: slot
@@ -66,6 +70,13 @@ jobs:
           path: .cache/static
           key: static-gtfs-v1-${{ steps.slot.outputs.slot }}
           restore-keys: static-gtfs-v1-
+
+      # Detector weights are pinned by SHA-256 in model.py; they are downloaded only
+      # the first time an event needs camera counts and are never committed.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/models
+          key: camera-models-${{ hashFiles('src/transit_ripple/cameras/model.py') }}
 
       - name: Check out data branch
         run: scripts/data_branch.sh prepare datastore
@@ -87,11 +98,19 @@ jobs:
       - name: Baselines (recomputed at most once a day)
         run: uv run --no-sync ripple baselines
 
-      - name: Detect delay events and write rule-based summaries
-        run: uv run --no-sync ripple events
+      - name: Camera inventory (weekly) and camera-station mapping
+        continue-on-error: true # events still run, with camera counts skipped
+        run: uv run --no-sync ripple-cameras map
 
-      - name: Render charts and index.html
-        run: uv run --no-sync ripple site
+      # Cameras are counted only for ongoing events, most severe first, with a hard
+      # cap per run (RIPPLE_EVENT_CAMERA_MAX_PER_RUN, default 30; one request per
+      # second). Set the repository variable RIPPLE_EVENT_CAMERAS_ENABLED=false to
+      # turn the camera step off.
+      - name: Detect events, count cameras near them, score the surface impact
+        env:
+          RIPPLE_EVENT_CAMERAS_ENABLED: ${{ vars.RIPPLE_EVENT_CAMERAS_ENABLED || 'true' }}
+          RIPPLE_EVENT_CAMERA_MAX_PER_RUN: ${{ vars.RIPPLE_EVENT_CAMERA_MAX_PER_RUN || '30' }}
+        run: uv run --no-sync ripple events
 
       - name: Compact previous days and apply retention
         if: always() && steps.ingest.outcome == 'success'
@@ -105,7 +124,7 @@ jobs:
 
       # Publish whenever ingestion succeeded, so a failing analysis step never
       # loses data (the job still fails and shows the error).
-      - name: Publish aggregates and site to data branch
+      - name: Publish aggregates to data branch
         if: >-
           always() && steps.ingest.outcome == 'success'
           && github.ref_name == github.event.repository.default_branch

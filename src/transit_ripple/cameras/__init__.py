@@ -11,6 +11,6 @@ Only numbers are produced: frames are processed in memory and never stored (exce
 when explicitly sampled into a local, gitignored folder for manual labeling).
 """
 
-from .interface import count_near_station, summarize_station_counts
+from .interface import count_near_station, count_near_stations, summarize_station_counts
 
-__all__ = ["count_near_station", "summarize_station_counts"]
+__all__ = ["count_near_station", "count_near_stations", "summarize_station_counts"]

@@ -6,20 +6,110 @@ traffic, bus, Citi Bike, camera and weather data on one timeline, detects subway
 disruptions, measures their surface "ripple", and recommends whether a rider
 should go, switch modes or wait. See the full [design document](docs/design.md).
 
-> **Traffic cameras (M3, in progress):** camera frames are turned into counts of
-> cars, buses, trucks and people (numbers only; frames are never stored and there
-> is no face or license plate recognition). The detector is **YOLOX-S** by Megvii,
-> whose code and pretrained weights are **Apache-2.0**, run with ONNX Runtime (MIT).
+**Live dashboard:** <https://edwinteng.github.io/nyc-transit-ripple/> (placeholder
+until GitHub Pages is enabled; see [Dashboard on GitHub Pages](#dashboard-on-github-pages)).
+
+![Dashboard: delay events on the left, a map of the affected stations with nearby cameras and Citi Bike stations, and the selected event's timeline against usual conditions](https://edwinteng.github.io/nyc-transit-ripple/screenshot.png)
+
+*The screenshot is taken by the deploy workflow and served with the site; no image
+is committed to this repository.*
+
+**Status: Milestone M4** — public dashboard on GitHub Pages: subway delay events
+with camera counts near the affected stations, a 0-100 surface impact score
+against the usual level for the weekday and time, and plain-English explanations
+written by fixed templates. (M1: subway ingestion and quality checks; M2: events,
+alerts, traffic speed, Citi Bike, baselines; M3: traffic camera counts.)
+
+> **Traffic cameras:** camera frames are turned into counts of cars, buses, trucks
+> and people (numbers only; frames are never stored and there is no face or
+> license plate recognition). The detector is **YOLOX-S** by Megvii, whose code
+> and pretrained weights are **Apache-2.0**, run with ONNX Runtime (MIT).
 > Ultralytics YOLO models are **not** used because they are AGPL-3.0. Weights are
 > downloaded at runtime and cached, never committed. See
 > [docs/cameras.md](docs/cameras.md).
 
-**Status: Milestone M2** — subway delay events with linked MTA alerts, NYC DOT
-traffic speed and Citi Bike ingestion, 500 m spatial join, weekday/time-of-day
-baselines, rule-based event summaries and a static event page. (M1: subway
-ingestion and data quality checks.)
+## Architecture
+
+Everything runs on free GitHub Actions; there is no server, no paid API and no
+language model.
+
+```
+ ingest.yml, every ~5 min                                        pages.yml, after each ingest run
+ ---------------------------------------------------------      --------------------------------
+ MTA subway GTFS-RT --+
+ MTA service alerts --+--> ingest + quality checks --> Parquet, 1-min UTC buckets
+ NYC DOT speeds ------+                                    |
+ Citi Bike GBFS ------+                                    v
+                         baselines (weekday x 30 min, 28 days)
+                                                           |
+                         delay events (median delay >= 5 min for 5 min, per line)
+                                                           |
+                         ongoing event? count cameras within 500 m of the
+                         worst stations (YOLOX, numbers only, capped per run)
+                                                           |
+                         surface impact score (traffic, cameras, Citi Bike vs.
+                         usual) + rule-based sentences
+                                                           |
+                         data branch (Parquet snapshot) ------------> ripple export
+                                                                       site/data/*.json
+                                                                           |
+                                                       GitHub Pages: site/ (HTML, CSS, JS)
+                                                       Leaflet + OpenStreetMap, Chart.js
+```
+
+- **Python package** `transit_ripple` (`ripple` and `ripple-cameras` commands):
+  ingestion, quality checks, storage, events, camera counting, impact score,
+  explanations and the JSON export.
+- **Storage:** Hive-partitioned Parquet (`<table>/date=YYYY-MM-DD/<run_id>.parquet`,
+  naive UTC timestamps) queried with DuckDB views that deduplicate rows, published
+  to the `data` branch as one snapshot commit per run.
+- **Dashboard:** static `site/` (plain HTML/CSS/JS, no build step) that reads small
+  JSON files exported from the data branch at deploy time. No Parquet is served.
+
+## Dashboard on GitHub Pages
+
+- **Map:** subway stations; stations of ongoing and recent (24 h) events are
+  highlighted with their impact score; selecting an event shows the cameras
+  ("C"), Citi Bike stations ("B") and traffic speed road links within 500 m.
+- **Event cards:** line, start/end, peak delay, impact score with a text label,
+  linked MTA alerts and the explanation. Selecting a card focuses the map and
+  opens the detail view; `#event=<id>` links to an event.
+- **Detail view:** timelines of the subway delay, nearby traffic speed, camera
+  counts and Citi Bikes, each against its usual level, plus the per-minute impact
+  score, the signals table and the metrics behind each sentence.
+- **Status bar:** time of the last update and the freshness of every source;
+  stale or missing sources are marked with text, not only color, and a banner
+  appears if the page data is more than 20 minutes old.
+- **Accessibility:** keyboard-usable cards and map markers, text alternatives for
+  charts, contrast-checked colors, and a single-column layout on phones.
+
+One-time setup: **Settings -> Pages -> Build and deployment -> Source: GitHub
+Actions**. The [`pages.yml`](.github/workflows/pages.yml) workflow then deploys
+after every ingest run on `main` and on manual dispatch (with an option to
+regenerate the screenshot).
 
 ## What it does
+
+### M4: event cameras, impact score, explanations, dashboard
+
+- **Cameras during events.** For each *ongoing* event (most severe first), the
+  cameras within 500 m of its most affected stations are counted through the M3
+  module (`count_near_stations`); the counts are stored with the event. A hard cap
+  (`RIPPLE_EVENT_CAMERA_MAX_PER_RUN`, default 30) bounds the cameras per run, and
+  no camera is requested when no event is ongoing.
+- **Surface impact score (0-100)** from (a) the drop of nearby traffic speed, (b)
+  the increase of camera counts of vehicles and people and (c) the drop of Citi
+  Bike availability, each relative to the same weekday and time of day.
+  Configurable weights (0.4 / 0.3 / 0.3) are renormalized over the signals that
+  have data and a reliable baseline, and the signals used are stored with the
+  score. Missing everything gives "not enough data", never 0. The time the
+  surface recovered is detected from the per-minute score.
+- **Explanations:** one sentence on the subway disruption and one on the surface
+  (traffic slowdown, bike drop and camera change vs. usual, score, recovery), from
+  fixed templates. Every sentence is stored with the metrics it quotes, and tests
+  check that no other number appears.
+- **Dashboard** on GitHub Pages (see above), fed by compact JSON
+  (`events.json`, `stations.json`, `status.json`, one file per event).
 
 ### M2: events and surface context
 
@@ -41,9 +131,8 @@ ingestion and data quality checks.)
 - **Rule-based explanations** (no language model): a short plain-English summary
   per event that only uses numbers present in the data, stored with the list of
   cited numbers.
-- **Static output:** a PNG chart per event (delay vs. nearby traffic speed and
-  Citi Bike availability over time, with baselines) and an `index.html` listing
-  recent events, ready for GitHub Pages.
+- **Static output (superseded by the M4 dashboard):** `ripple site` still renders
+  a PNG chart per event and an `index.html` for offline use.
 - **Data quality** for the new sources (status, staleness, coverage, gaps) is part
   of every run's report.
 
@@ -70,18 +159,37 @@ Details of the tables and every quality rule: [docs/data-model.md](docs/data-mod
 Requires Python 3.11+. [uv](https://docs.astral.sh/uv/) is recommended:
 
 ```bash
-uv sync
+uv sync --extra vision
 ```
 
 ```bash
-uv run ripple ingest
+uv run ripple ingest --polls 6 --interval 60
 ```
 
 ```bash
-uv run ripple baselines && uv run ripple events && uv run ripple site
+uv run ripple baselines && uv run ripple events
 ```
 
-Then open `data/site/index.html`. Or with plain pip:
+```bash
+uv run ripple export --out site/data && python -m http.server 8000 -d site
+```
+
+Then open <http://localhost:8000/>. The `vision` extra (ONNX Runtime, Pillow) is
+only needed for camera counts during events; without it, or with
+`ripple events --no-cameras`, events are scored on traffic and Citi Bike alone.
+The camera-to-station mapping comes from `uv run ripple-cameras map` (it
+downloads the public camera list once a week). To browse the data published by
+the scheduled pipeline instead, export from the data branch:
+
+```bash
+git fetch origin data && git worktree add ../ripple-data origin/data
+```
+
+```bash
+uv run ripple export --data-dir ../ripple-data --out site/data
+```
+
+Or with plain pip:
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e .
@@ -115,8 +223,9 @@ from earlier weeks; until then summaries say that no baseline exists yet.
 | `ripple ingest [--sources subway,alerts,traffic,bikes] [--polls N --interval S]` | Fetch sources, compute delays, run checks, write Parquet + report |
 | `ripple ingest --replay data/raw/*/*.pb.gz` | Re-process saved subway payloads offline (no network) |
 | `ripple baselines [--force]` | Weekday x time-of-day baselines (skipped if computed in the last 24 h) |
-| `ripple events [--now ISO]` | Detect delay events, link alerts, add surface context and summaries |
-| `ripple site [--out DIR]` | Render event charts and `index.html` (default `data/site`) |
+| `ripple events [--now ISO] [--no-cameras]` | Detect delay events, link alerts, count cameras near ongoing events, score the surface impact, write explanations |
+| `ripple export [--out site/data]` | Write the dashboard JSON (status, stations, events, one file per event) |
+| `ripple site [--out DIR]` | M2 offline report: PNG charts and `index.html` (default `data/site`) |
 | `ripple neighbors` | Recompute the 500 m spatial join |
 | `ripple prune --table bike_minute [--keep-days N]` | Retention for large tables |
 | `ripple query "SQL"` | Run SQL against the DuckDB views (`--format table/csv/json`) |
@@ -196,12 +305,14 @@ data/
   alerts/..., alert_presence/...                 service alert versions and presence
   traffic_minute/...                             DOT traffic speed per link observation
   bike_minute/...                                Citi Bike bikes/docks per station x minute
-  events/...                                     delay event versions with summaries
-  reference/                                     stations, links, bike stations, neighbors,
-                                                 baselines (snapshot Parquet files)
-  site/                                          index.html + charts/<event_id>.png
+  events/...                                     delay event versions: camera counts, impact
+                                                 score and explanation sentences
+  camera_counts/...                              cars/buses/trucks/people per camera fetch
+  reference/                                     stations, links, bike stations, cameras,
+                                                 neighbors, camera-station map, baselines
   reports/date=YYYY-MM-DD/<run_id>.json          full quality report per run
-  state.json                                     dedup / freshness state between runs
+  reports/events/date=YYYY-MM-DD/<run_id>.json   cameras counted per event and run
+  state.json, camera_state.json                  dedup / freshness state between runs
   raw/                                           raw payloads (only with --save-raw)
   static/                                        static GTFS cache (Parquet)
 ```
@@ -226,28 +337,52 @@ Key settings (all `RIPPLE_<NAME>`): `EVENT_THRESHOLD_MIN` (5), `EVENT_MIN_MINUTE
 (N = 5), `EVENT_METRIC` (`delay_median_min`), `NEIGHBOR_RADIUS_M` (500),
 `BASELINE_DAYS` (28), `BASELINE_MIN_DAYS` (3), `BIKE_RETENTION_DAYS` (35).
 
+Impact score and cameras (M4; the formula is in
+[docs/data-model.md](docs/data-model.md#surface-impact-score)):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `IMPACT_WEIGHT_TRAFFIC`, `_CAMERA`, `_BIKES` | 0.4, 0.3, 0.3 | Signal weights, renormalized over usable signals |
+| `IMPACT_TRAFFIC_FULL_DROP_PCT` | 40 | Traffic speed drop vs. usual that scores 100 |
+| `IMPACT_CAMERA_FULL_INCREASE_PCT` | 100 | Camera count increase that scores 100 |
+| `IMPACT_BIKES_FULL_DROP_PCT` | 30 | Citi Bike availability drop that scores 100 |
+| `IMPACT_MIN_CONFIDENCE` | `ok` | Baselines with less history are not used (`low` to allow them) |
+| `IMPACT_RECOVERY_THRESHOLD`, `_MINUTES` | 20, 10 | Recovered: score below 20 for 10 minutes |
+| `EVENT_CAMERAS_ENABLED` | `true` | Count cameras during ongoing events |
+| `EVENT_CAMERA_MAX_PER_RUN` | 30 | Hard cap on cameras counted per run |
+| `EXPORT_WINDOW_DAYS`, `EXPORT_MAX_POINTS` | 30, 120 | Events shown; chart points per series |
+
 ## Automation (GitHub Actions)
 
 - [`ingest.yml`](.github/workflows/ingest.yml) runs every 5 minutes (and on
   manual dispatch): 3 subway snapshots 60 seconds apart, then alerts, traffic
-  speed and Citi Bike status once, baselines, events, summaries and the site.
+  speed and Citi Bike status once, baselines, events, camera counts near ongoing
+  events (capped), the impact score and the explanations.
   Slower cadences are handled inside the run instead of separate schedules
   (a second scheduled workflow sharing the data-branch concurrency group could be
   starved): GBFS discovery and station information daily, static GTFS every 6
-  hours, baselines daily, compaction and retention once a day has rolled over.
+  hours, the camera list weekly, baselines daily, compaction and retention once a
+  day has rolled over.
   Each run then:
-  - publishes aggregates, events, reference tables, `site/` and `state.json` to the
+  - publishes aggregates, events, camera counts, reference tables and state to the
     **`data` branch**, replaced by a single snapshot commit each run (force-push
     with lease). Publishing happens whenever ingestion succeeded, even if an
     analysis step failed (the job still fails visibly);
   - uploads per-stop delays and the JSON report as a workflow artifact kept for
     7 days ("raw data short-term, aggregates long-term");
   - adds the Markdown quality report to the job summary.
+- [`pages.yml`](.github/workflows/pages.yml) runs after every ingest run on `main`
+  (and on manual dispatch): it checks out the data branch read-only, runs
+  `ripple export` into the site, and deploys `site/` with the official
+  `actions/upload-pages-artifact` and `actions/deploy-pages`.
+- [`cameras.yml`](.github/workflows/cameras.yml) (manual, plus a synthetic-frame
+  benchmark on pull requests that change the camera module).
 - [`ci.yml`](.github/workflows/ci.yml) runs lint and tests on Python 3.11–3.13.
 
 Workflow security: the default token is read-only (`contents: read`); only the
-ingestion job gets `contents: write`, to push the data branch. Every action is
-pinned to a commit SHA. `SOCRATA_APP_TOKEN` is only used by the scheduled /
+ingestion job gets `contents: write`, to push the data branch, and only the Pages
+deploy job gets `pages: write` and `id-token: write`. Every action is pinned to a
+commit SHA. `SOCRATA_APP_TOKEN` is only used by the scheduled /
 manually dispatched ingestion workflow, which never runs for pull requests, so it
 cannot reach forks; CI needs no secrets, checks out without persisted credentials,
 and `pull_request_target` is not used.
@@ -260,6 +395,9 @@ this is merged to `main`. Optional repository variables:
 | `RIPPLE_DATA_BRANCH` | `data` | Branch for aggregates (`main`/`master` are refused) |
 | `RIPPLE_PUBLISH_DATA` | (on) | Set to `false` to stop publishing to the data branch |
 | `RIPPLE_ARTIFACT_RETENTION_DAYS` | `7` | Retention of per-run artifacts |
+| `RIPPLE_EVENT_CAMERAS_ENABLED` | `true` | Set to `false` to stop counting cameras during events |
+| `RIPPLE_EVENT_CAMERA_MAX_PER_RUN` | `30` | Hard cap on cameras counted per ingest run |
+| `RIPPLE_SITE_URL` | `https://<owner>.github.io/<repo>/` | Live site, used to reuse the screenshot |
 
 To analyse the published history locally:
 
@@ -270,10 +408,6 @@ git fetch origin data && git worktree add ../ripple-data origin/data
 ```bash
 uv run ripple query --data-dir ../ripple-data "SELECT count(*) FROM line_minute"
 ```
-
-The event page is `site/index.html` on the data branch. To serve it later with
-GitHub Pages, deploy that folder (for example with `actions/deploy-pages` from a
-workflow that checks out the data branch).
 
 ## Development
 
@@ -289,6 +423,33 @@ Tests use synthetic static schedules and GTFS-Realtime payloads (built with the
 same protobuf classes, including the NYCT extension), so they run offline.
 
 ## Known limitations
+
+### M4
+
+- **Camera baselines fill slowly.** Cameras are only counted during events, so
+  their weekday/time baselines come from earlier event-time counts at the same
+  cameras. They are sparse and biased towards disrupted periods; until a slot has
+  3 days of history (`ok` confidence) the camera signal is left out and the score
+  is renormalized over traffic and Citi Bike.
+- **The first weeks show "not enough data".** All baselines need at least 3 days
+  of the same weekday and time, i.e. about 3 weeks of collection, before any
+  impact score appears. Until then events show observed values only.
+- **Camera cap.** At most 30 cameras per run (about one per second); with many
+  ongoing events, the most severe ones get cameras first and others may get none
+  in that run. Counts are snapshots once per run, not continuous video.
+- **Scores are a heuristic.** The weights and "full" changes are judgment calls
+  (documented and configurable), not fitted to ground truth; the score describes
+  conditions near a disruption, not causation.
+- **Recovery** needs the score to stay below 20 for 10 consecutive minutes within
+  2 hours after the event; gaps in the surface data delay or prevent it
+  (`not_yet` / `unknown`).
+- **Freshness of the page.** The site is redeployed after each ingest run, so it
+  lags real time by one run plus the deploy (typically 5-10 minutes, more when
+  GitHub delays scheduled runs).
+- **Third-party assets.** Leaflet and Chart.js load from unpkg (version-pinned with
+  Subresource Integrity) and map tiles from the OpenStreetMap tile servers, which
+  are meant for light use; a high-traffic deployment should use another tile
+  provider.
 
 ### M2
 
@@ -316,13 +477,10 @@ same protobuf classes, including the NYCT extension), so they run offline.
   planned-work notices are numerous and listed separately. The alerts feed header
   is a last-change time, so staleness is only flagged after 6 hours.
 - **Comparisons are descriptive.** The summaries report differences from the
-  baseline during the event; they do not claim causation or measure after-effects
-  (M3 adds an impact score).
+  baseline during the event; they do not claim causation.
 - **Data branch size.** `bike_minute` is ~2.3 MB/day compacted and kept 35 days
   (~80 MB), plus the current day's per-run files; the branch is fetched in full by
   every run. Moving long-term storage to Releases/object storage remains planned.
-- **GitHub Pages** is not configured yet; the site is generated into `site/` on
-  the data branch.
 
 ### M1
 
@@ -357,8 +515,6 @@ same protobuf classes, including the NYCT extension), so they run offline.
 
 ## Roadmap
 
-M3 cameras + YOLO, surface impact score · M4 static website (GitHub Pages),
-richer rule-based explanations · M5 bus data, recommendation engine · M6
-evaluation framework, demo. Explanations are always rule-based and generated in
-GitHub Actions (no local model). See [docs/design.md](docs/design.md).
-See [docs/design.md](docs/design.md).
+M5 bus data, recommendation engine · M6 evaluation framework, demo.
+Explanations are always rule-based and generated in GitHub Actions (no local
+model). See [docs/design.md](docs/design.md).
