@@ -80,7 +80,8 @@ each run replaces this branch with a single snapshot commit.
 
 Query with DuckDB, e.g. `ripple query --data-dir . "SELECT * FROM events LIMIT 10"`.
 EOF
-    git checkout --quiet --orphan "ripple-snapshot-$$"
+    # A fresh orphan branch per publish (a long run publishes many times).
+    git checkout --quiet --orphan "ripple-snapshot-$$-$(date +%s%N)"
     git add -A
     base="$(cat "$base_file")"
     if [ -n "$base" ] && [ "$(git write-tree)" = "$(git rev-parse "$base^{tree}")" ]; then
@@ -94,6 +95,8 @@ EOF
     # Lease: only overwrite the branch if nobody pushed since we fetched it
     # (an empty lease means the branch must not exist yet).
     git push --quiet --force-with-lease="refs/heads/$branch:$base" origin "HEAD:refs/heads/$branch"
+    # The next publish of the same run leases against what was just pushed.
+    git rev-parse HEAD >"$base_file"
     echo "Published data snapshot to '$branch'."
     ;;
 

@@ -302,15 +302,19 @@ Impact score and cameras (M4; the formula is in
 
 ## Automation (GitHub Actions)
 
-- [`ingest.yml`](../.github/workflows/ingest.yml) runs every 5 minutes (and on
-  manual dispatch): 3 subway snapshots 60 seconds apart, then alerts, traffic
-  speed and Citi Bike status once, baselines, events, camera counts near ongoing
-  events (capped), the impact score and the explanations.
-  Slower cadences are handled inside the run instead of separate schedules
-  (a second scheduled workflow sharing the data-branch concurrency group could be
-  starved): GBFS discovery and station information daily, static GTFS every 6
-  hours, the camera list weekly, baselines daily, compaction and retention once a
-  day has rolled over.
+- [`ingest.yml`](../.github/workflows/ingest.yml) is scheduled every 5 minutes
+  (and runs on manual dispatch), but GitHub starts scheduled runs only every few
+  hours. Each run therefore keeps collecting for `RIPPLE_COLLECT_MINUTES` (default
+  330, under the 6-hour job limit) with [`scripts/collect.sh`](../scripts/collect.sh):
+  every iteration takes 5 subway snapshots about a minute apart (plus one bus
+  snapshot per subway poll), then alerts, traffic speed and Citi Bike status,
+  baselines (every 6 hours), events, camera counts near ongoing events (capped),
+  the impact score, explanations and recommendations, and publishes the data
+  branch. A schedule that fires during a run is queued and starts right after it.
+  Slower cadences are handled inside the run: GBFS discovery and station
+  information daily, static GTFS every 6 hours, the camera and bus stop lists
+  weekly, compaction and retention every hour. The dashboard is redeployed when a
+  run ends.
   Each run then:
   - publishes aggregates, events, camera counts, reference tables and state to the
     **`data` branch**, replaced by a single snapshot commit each run (force-push
@@ -349,6 +353,7 @@ this is merged to `main`. Optional repository variables:
 | `RIPPLE_DATA_BRANCH` | `data` | Branch for aggregates (`main`/`master` are refused) |
 | `RIPPLE_PUBLISH_DATA` | (on) | Set to `false` to stop publishing to the data branch |
 | `RIPPLE_ARTIFACT_RETENTION_DAYS` | `7` | Retention of per-run artifacts |
+| `RIPPLE_COLLECT_MINUTES` | `330` | How long each ingest run keeps collecting |
 | `RIPPLE_EVENT_CAMERAS_ENABLED` | `true` | Set to `false` to stop counting cameras during events |
 | `RIPPLE_EVENT_CAMERA_MAX_PER_RUN` | `30` | Hard cap on cameras counted per ingest run |
 | `RIPPLE_SITE_URL` | `https://<owner>.github.io/<repo>/` | Live site, used to reuse the screenshot |

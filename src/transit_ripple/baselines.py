@@ -13,6 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 from .config import AGENCY_TIMEZONE, Settings
@@ -41,6 +42,12 @@ METRICS = {
     "camera_vehicles": ("camera_counts_ok", "camera_id", "observed_utc", "vehicles", "TRUE"),
     "camera_persons": ("camera_counts_ok", "camera_id", "observed_utc", "persons", "TRUE"),
 }
+
+# Pooled baselines: the same half-hour over all weekdays (Mon-Fri) or both weekend
+# days, stored with these weekday codes. They are used when the exact weekday slot
+# does not yet have enough days of history (see ``lookup``).
+POOLED_WEEKDAYS = -1
+POOLED_WEEKEND = -2
 
 CONFIDENCE_OK = "ok"
 CONFIDENCE_LOW = "low"
@@ -71,7 +78,13 @@ def compute_baselines(
     start = computed - dt.timedelta(days=settings.baseline_days)
     slot = int(settings.baseline_slot_min)
     frames = []
-    for metric, (table, id_col, time_col, value_col, where) in METRICS.items():
+    day_keys = {
+        "weekday": "(isodow(lt) - 1)",
+        "pooled": f"CASE WHEN isodow(lt) <= 5 THEN {POOLED_WEEKDAYS} ELSE {POOLED_WEEKEND} END",
+    }
+    for (metric, (table, id_col, time_col, value_col, where)), day_key in (
+        (m, k) for m in METRICS.items() for k in day_keys.values()
+    ):
         cond = where.format(bike_stale=float(settings.bike_station_stale_after_s))
         sql = f"""
         WITH obs AS (
@@ -82,7 +95,7 @@ def compute_baselines(
               AND ({cond})
         )
         SELECT '{metric}' AS metric, entity_id,
-               (isodow(lt) - 1)::TINYINT AS weekday,
+               ({day_key})::TINYINT AS weekday,
                ((hour(lt) * 60 + minute(lt)) // {slot} * {slot})::SMALLINT AS slot_start_min,
                count(DISTINCT lt::DATE)::INTEGER AS n_days,
                count(*)::INTEGER AS n_obs,
@@ -154,10 +167,14 @@ def lookup(
     grid: pd.DataFrame,
     slot_min: int,
 ) -> pd.DataFrame:
-    """Attach ``baseline``, ``baseline_n_days`` and ``baseline_confidence`` to a grid.
+    """Attach ``baseline``, ``baseline_n_days``, ``baseline_confidence`` and
+    ``baseline_level`` to a grid.
 
-    ``grid`` has ``minute_utc`` and ``entity_id`` columns. Missing baselines give
-    NaN and confidence ``none``.
+    ``grid`` has ``minute_utc`` and ``entity_id`` columns. The baseline of the same
+    weekday and half-hour is used when it has enough history (``ok``); otherwise the
+    pooled one (same half-hour over all weekdays, or both weekend days) if that is
+    ``ok``; otherwise whichever exists, with ``low`` confidence. Missing baselines
+    give NaN and confidence ``none``.
     """
     out = grid.copy()
     if out.empty:
@@ -183,6 +200,21 @@ def lookup(
     )
     b = b.astype({"weekday": "int8", "slot_start_min": "int64"})
     out["slot_start_min"] = out["slot_start_min"].astype("int64")
-    out = out.merge(b, on=["entity_id", "weekday", "slot_start_min"], how="left")
-    out["baseline_confidence"] = out["baseline_confidence"].fillna(CONFIDENCE_NONE)
-    return out
+    cols = ["baseline", "baseline_n_days", "baseline_confidence"]
+    exact = out.merge(b, on=["entity_id", "weekday", "slot_start_min"], how="left")
+    pooled_key = out["weekday"].map(lambda d: POOLED_WEEKDAYS if d <= 4 else POOLED_WEEKEND)
+    pooled = (
+        out.assign(weekday=pooled_key.astype("int8"))
+        .merge(b, on=["entity_id", "weekday", "slot_start_min"], how="left")[cols]
+        .set_axis(exact.index)
+    )
+    e_ok = exact["baseline_confidence"].eq(CONFIDENCE_OK)
+    p_ok = pooled["baseline_confidence"].eq(CONFIDENCE_OK)
+    use_pooled = ~e_ok & (p_ok | exact["baseline"].isna()) & pooled["baseline"].notna()
+    for c in cols:
+        exact[c] = exact[c].where(~use_pooled, pooled[c])
+    exact["baseline_level"] = np.where(
+        exact["baseline"].isna(), None, np.where(use_pooled, "pooled", "weekday")
+    )
+    exact["baseline_confidence"] = exact["baseline_confidence"].fillna(CONFIDENCE_NONE)
+    return exact

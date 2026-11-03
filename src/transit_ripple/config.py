@@ -206,10 +206,10 @@ class Settings:
     baseline_days: int = 28
     baseline_slot_min: int = 30
     baseline_min_days: int = 3
-    baseline_max_age_hours: float = 24.0
+    baseline_max_age_hours: float = 6.0
     # Baselines describe earlier weeks: the most recent hours (which may contain the
     # disruption being analysed) are excluded.
-    baseline_exclude_recent_hours: float = 24.0
+    baseline_exclude_recent_hours: float = 3.0
 
     # --- delay events ------------------------------------------------------------------
     # Line-minute metric compared with the threshold (worst direction per minute).
