@@ -1,15 +1,17 @@
 name: Ingest and analyse
 
-# Every 5 minutes (GitHub may delay scheduled runs):
-#   subway feeds (3 snapshots), bus positions (one snapshot per subway poll),
-#   service alerts, NYC DOT traffic speed and Citi Bike status -> quality report
-#   -> baselines (at most daily) -> delay events -> camera counts near ongoing
-#   events (capped) -> surface impact score and rule-based explanations ->
-#   ranked go / switch / wait options for riders -> data branch.
+# Scheduled every 5 minutes, but GitHub starts scheduled runs only every few hours,
+# so each run keeps collecting for RIPPLE_COLLECT_MINUTES (default 330) and
+# publishes after every iteration (scripts/collect.sh). Each iteration:
+#   subway feeds (5 snapshots about a minute apart), bus positions (one snapshot
+#   per subway poll), service alerts, NYC DOT traffic speed and Citi Bike status
+#   -> quality report -> baselines (every 6 hours) -> delay events -> camera
+#   counts near ongoing events (capped) -> surface impact score and rule-based
+#   explanations -> ranked go / switch / wait options for riders -> data branch.
 # Slower cadences are handled inside the run: Citi Bike station information and
-# GBFS discovery are refreshed daily, the static GTFS every 6 hours, the bus stop
-# list and the camera inventory weekly, baselines daily, and compaction/retention once the day has
-# rolled over. The "Deploy dashboard" workflow runs after this one and publishes
+# GBFS discovery daily, the static GTFS every 6 hours, the bus stop list and the
+# camera inventory weekly, compaction and retention every hour. The "Deploy
+# dashboard" workflow runs after each run ends and publishes
 # the dashboard to GitHub Pages.
 #
 # Security: read-only token by default; only this job can write, and only to the
@@ -20,9 +22,12 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
+      minutes:
+        description: "How long to keep collecting (minutes)"
+        default: "330"
       polls:
-        description: "Subway snapshots per run"
-        default: "3"
+        description: "Subway snapshots per iteration"
+        default: "5"
       interval:
         description: "Seconds between subway snapshots"
         default: "60"
@@ -48,7 +53,7 @@ env:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 355 # GitHub-hosted jobs may run at most 6 hours
     permissions:
       contents: write # push aggregates to the data branch
     steps:
@@ -82,62 +87,34 @@ jobs:
       - name: Check out data branch
         run: scripts/data_branch.sh prepare datastore
 
-      - name: Ingest subway, buses, alerts, traffic speed and Citi Bike
-        id: ingest
+      # GitHub starts scheduled runs only every few hours, so each run collects for
+      # several hours: every iteration ingests POLLS snapshots (about a minute
+      # apart), updates baselines (every 6 h), detects events, counts cameras near
+      # ongoing events (capped), ranks options for riders, and publishes the data
+      # branch. A schedule firing during a run is queued and starts right after it.
+      # Cameras: set RIPPLE_EVENT_CAMERAS_ENABLED=false (repository variable) to
+      # turn them off; RIPPLE_EVENT_CAMERA_MAX_PER_RUN caps cameras per iteration.
+      - name: Collect, analyse and publish (repeated)
         env:
-          POLLS: ${{ inputs.polls || '3' }}
+          MINUTES: ${{ inputs.minutes || vars.RIPPLE_COLLECT_MINUTES || '330' }}
+          POLLS: ${{ inputs.polls || '5' }}
           INTERVAL: ${{ inputs.interval || '60' }}
           SAVE_RAW: ${{ inputs.save_raw && '1' || '' }}
+          PUBLISH: >-
+            ${{ github.ref_name == github.event.repository.default_branch
+            && vars.RIPPLE_PUBLISH_DATA != 'false' && '1' || '0' }}
+          RIPPLE_EVENT_CAMERAS_ENABLED: ${{ vars.RIPPLE_EVENT_CAMERAS_ENABLED || 'true' }}
+          RIPPLE_EVENT_CAMERA_MAX_PER_RUN: ${{ vars.RIPPLE_EVENT_CAMERA_MAX_PER_RUN || '30' }}
           # Optional free NYC Open Data app token (repository secret); never logged.
           SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
           # Free MTA Bus Time key (repository secret). Without it, or if Bus Time
           # rejects it, bus data is reported "unavailable" and skipped.
           MTA_BUS_API_KEY: ${{ secrets.MTA_BUS_API_KEY }}
-        run: >-
-          uv run --no-sync ripple ingest
-          --sources subway,bus,alerts,traffic,bikes
-          --polls "$POLLS" --interval "$INTERVAL" ${SAVE_RAW:+--save-raw}
-          --report-md "$RUNNER_TEMP/quality-report.md"
+        run: scripts/collect.sh "$MINUTES"
 
-      - name: Baselines (recomputed at most once a day)
-        run: uv run --no-sync ripple baselines
-
-      - name: Camera inventory (weekly) and camera-station mapping
-        continue-on-error: true # events still run, with camera counts skipped
-        run: uv run --no-sync ripple-cameras map
-
-      # Cameras are counted only for ongoing events, most severe first, with a hard
-      # cap per run (RIPPLE_EVENT_CAMERA_MAX_PER_RUN, default 30; one request per
-      # second). Set the repository variable RIPPLE_EVENT_CAMERAS_ENABLED=false to
-      # turn the camera step off.
-      - name: Detect events, count cameras near them, score the surface impact
-        env:
-          RIPPLE_EVENT_CAMERAS_ENABLED: ${{ vars.RIPPLE_EVENT_CAMERAS_ENABLED || 'true' }}
-          RIPPLE_EVENT_CAMERA_MAX_PER_RUN: ${{ vars.RIPPLE_EVENT_CAMERA_MAX_PER_RUN || '30' }}
-        run: uv run --no-sync ripple events
-
-      - name: Rank go / switch / wait options for riders at affected stations
-        run: uv run --no-sync ripple recommend
-
-      - name: Compact previous days and apply retention
-        if: always() && steps.ingest.outcome == 'success'
-        run: |
-          uv run --no-sync ripple compact
-          uv run --no-sync ripple prune --table bike_minute
-          uv run --no-sync ripple prune --table bus_minute
-
-      - name: Quality report summary
+      - name: Quality report summary (last iteration)
         if: always()
         run: cat "$RUNNER_TEMP/quality-report.md" >> "$GITHUB_STEP_SUMMARY" || true
-
-      # Publish whenever ingestion succeeded, so a failing analysis step never
-      # loses data (the job still fails and shows the error).
-      - name: Publish aggregates to data branch
-        if: >-
-          always() && steps.ingest.outcome == 'success'
-          && github.ref_name == github.event.repository.default_branch
-          && vars.RIPPLE_PUBLISH_DATA != 'false'
-        run: scripts/data_branch.sh publish datastore "Ingest run ${{ github.run_id }}"
 
       - name: Upload per-stop delays and reports (short-term)
         if: always()

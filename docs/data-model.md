@@ -241,17 +241,30 @@ have a DOT traffic link (the DOT network covers mostly highways and arterials).
 
 ## Baselines
 
-`baselines` holds, per metric (`traffic_speed_mph`, `bikes_available`,
-`docks_available`), entity, local weekday (Mon = 0) and 30-minute local time slot:
-`n_days`, `n_obs`, `mean`, `median`, `std` and `confidence`.
+`baselines` holds, per metric (`traffic_speed_mph`, `bus_speed_mph`,
+`bikes_available`, `docks_available`, `camera_vehicles`, `camera_persons`), entity
+and 30-minute local time slot, two kinds of rows:
 
-- Window: the last 28 days, excluding the most recent 24 hours, so a baseline
-  describes earlier weeks and never contains the disruption it is compared with.
+- **weekday** rows (`weekday` = 0 for Monday ... 6 for Sunday): the same weekday
+  and half-hour, e.g. "Mondays 08:00-08:30";
+- **pooled** rows (`weekday` = -1 for Monday-Friday, -2 for Saturday-Sunday): the
+  same half-hour over all weekdays, or both weekend days.
+
+Each row has `n_days`, `n_obs`, `mean`, `median`, `std` and `confidence`.
+
+- Window: the last 28 days, excluding the most recent 3 hours, so a baseline never
+  contains the disruption it is compared with.
 - Only valid observations count (valid traffic readings; installed, renting
-  stations with a report younger than 30 minutes).
-- `confidence = low` when fewer than 3 distinct days contributed (that is, fewer
-  than three earlier same weekdays); `none` when no baseline exists.
-- Recomputed at most once a day (`reference/baselines_meta.json` records when).
+  stations with a report younger than 30 minutes; bus segments with samples).
+- `confidence = low` when fewer than 3 distinct days contributed; `none` when no
+  baseline exists.
+- **Lookup:** the weekday row is used when it is `ok`; otherwise the pooled row if
+  that is `ok`; otherwise whichever exists, with `low` confidence (which the impact
+  score does not use). `baseline_level` records `weekday` or `pooled`. A weekday
+  slot needs 3 weeks of history, a pooled weekday slot only 3 days, so comparisons
+  become available after a few days of continuous collection, and switch to the
+  more specific weekday baseline once it has enough history.
+- Recomputed at most every 6 hours (`reference/baselines_meta.json` records when).
 
 ## Delay events
 

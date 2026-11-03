@@ -92,7 +92,10 @@ scheduled run. In the meantime:
 3. Gaps are recorded, not hidden: the reliability section reports the median and
    longest time between runs, and events end with `data_gap` across long gaps.
 
-If regular 5-minute sampling becomes essential, an external scheduler can call the
+Each ingest run keeps collecting for `RIPPLE_COLLECT_MINUTES` (default 330) and
+publishes every few minutes, so the data stays nearly continuous even when GitHub
+starts runs hours apart; the dashboard itself is redeployed only when a run ends.
+If regular 5-minute redeploys become essential, an external scheduler can call the
 `workflow_dispatch` API with a fine-grained token limited to Actions on this
 repository; store that token outside the repository.
 
