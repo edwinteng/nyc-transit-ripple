@@ -127,7 +127,7 @@ def build_status(
 
     thresholds = {
         "alerts": settings.alerts_stale_after_s,
-        "traffic": settings.traffic_stale_after_s,
+        **({"traffic": settings.traffic_stale_after_s} if settings.traffic_enabled else {}),
         "bike_status": settings.bike_feed_stale_after_s + 600,
         "bus": settings.bus_stale_after_s + 600,
     }
@@ -263,6 +263,7 @@ def _signals(detail_json) -> dict:
     if not isinstance(detail_json, str) or not detail_json:
         return {}
     signals = json.loads(detail_json).get("signals", {})
+    # Signals switched off (weight 0, e.g. traffic speed by default) are not shown.
     return {
         name: {
             "status": d.get("status"),
@@ -271,6 +272,7 @@ def _signals(detail_json) -> dict:
             "weight": num(d.get("effective_weight"), 3),
         }
         for name, d in signals.items()
+        if d.get("status") != "zero_weight"
     }
 
 

@@ -168,6 +168,11 @@ class Settings:
     # The alerts header timestamp is the time of the latest alert change, not a
     # heartbeat, so only a very old one indicates a frozen feed.
     alerts_stale_after_s: int = 6 * 3600
+    # NYC DOT traffic speed is off by default: the feed covers only ~125 highway and
+    # arterial links and is often hours behind or stops updating, while bus speeds
+    # measure local streets near far more stations. RIPPLE_TRAFFIC_ENABLED=true (with
+    # RIPPLE_IMPACT_WEIGHT_TRAFFIC > 0) turns it back on.
+    traffic_enabled: bool = False
     traffic_url: str = DEFAULT_TRAFFIC_URL
     # Each run asks for observations newer than max(last seen, now - lookback).
     traffic_lookback_min: int = 90
@@ -241,10 +246,10 @@ class Settings:
 
     # --- surface impact score (M4, bus signal M5) -------------------------------------------
     # Weights of the signals; they are renormalized over the signals available.
-    impact_weight_traffic: float = 0.3
-    impact_weight_bus: float = 0.3
-    impact_weight_camera: float = 0.2
-    impact_weight_bikes: float = 0.2
+    impact_weight_traffic: float = 0.0  # traffic speed is off by default (see above)
+    impact_weight_bus: float = 0.5
+    impact_weight_camera: float = 0.25
+    impact_weight_bikes: float = 0.25
     # Change vs. baseline that maps to a sub-score of 100 (linear, clipped to 0-100).
     impact_traffic_full_drop_pct: float = 40.0
     impact_bus_full_drop_pct: float = 40.0
