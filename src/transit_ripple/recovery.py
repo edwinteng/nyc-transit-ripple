@@ -195,10 +195,10 @@ class RecoveryModel:
             if len(longer) >= MIN_CONDITIONAL_EVENTS:
                 rem_med, rem_p75 = _q(longer, 0.5), _q(longer, 0.75)
             else:
-                # Already longer than (almost) every similar event: no reliable
-                # conditional estimate; use what is left of the overall quantiles.
-                rem_med = round(max(0.0, duration.median_min - elapsed_min), 1)
-                rem_p75 = round(max(0.0, duration.p75_min - elapsed_min), 1)
+                # Already longer than (almost) every similar past event: history says
+                # nothing reliable about when it ends, so there is no estimate (never
+                # "0 more minutes", which would rank waiting first).
+                rem_med = rem_p75 = None
                 duration.confidence = "low" if duration.confidence != "none" else "none"
         clearing, _ = self._estimate("clearing_min", route, band, cause)
         return WaitEstimate(duration, round(float(elapsed_min), 1), rem_med, rem_p75, clearing)

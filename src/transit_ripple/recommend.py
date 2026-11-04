@@ -543,8 +543,17 @@ def option_text(o: Option, settings, event: dict) -> dict:
         line = s.cite("route", o.routes[0])
         est = f["estimate"]
         d = est["duration"]
-        if d["n_events"] == 0 or o.wait_min is None:
+        if d["n_events"] == 0:
             text = f"Wait for the {line}: there are no past events yet to estimate the recovery"
+        elif o.wait_min is None:
+            med = s.cite("history_median_min", _num(d["median_min"], 0))
+            n = s.cite("history_n_events", str(d["n_events"]))
+            group = s.cite("history_group", d["group"])
+            text = (
+                f"Wait for the {line}: this delay has already lasted longer than most similar "
+                f"past delays (median {med} min; {n} past events, {group}), so there is no "
+                "reliable estimate of when it ends"
+            )
         else:
             rem = s.cite("remaining_median_min", _num(o.wait_min, 0))
             med = s.cite("history_median_min", _num(d["median_min"], 0))

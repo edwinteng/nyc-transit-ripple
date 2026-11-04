@@ -93,10 +93,31 @@ EOF
         -c commit.gpgsign=false \
         commit --quiet -m "$message"
     # Lease: only overwrite the branch if nobody pushed since we fetched it
-    # (an empty lease means the branch must not exist yet).
-    git push --quiet --force-with-lease="refs/heads/$branch:$base" origin "HEAD:refs/heads/$branch"
+    # (an empty lease means the branch must not exist yet). GitHub sometimes answers
+    # a push with a transient server error (500, "fatal error in commit_refs"), so
+    # retry with backoff; if a failed attempt in fact updated the branch, it now
+    # points at our commit and that counts as published.
+    head="$(git rev-parse HEAD)"
+    pushed=0
+    for wait in 2 4 8 16 0; do
+      if git push --quiet --force-with-lease="refs/heads/$branch:$base" origin "HEAD:refs/heads/$branch"; then
+        pushed=1
+        break
+      fi
+      if [ "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" = "$head" ]; then
+        pushed=1
+        break
+      fi
+      [ "$wait" -gt 0 ] || break
+      echo "Push failed; retrying in ${wait}s."
+      sleep "$wait"
+    done
+    if [ "$pushed" != 1 ]; then
+      echo "Publishing to '$branch' failed after retries." >&2
+      exit 1
+    fi
     # The next publish of the same run leases against what was just pushed.
-    git rev-parse HEAD >"$base_file"
+    echo "$head" >"$base_file"
     echo "Published data snapshot to '$branch'."
     ;;
 
