@@ -14,7 +14,12 @@ from transit_ripple.impact import (
 
 # Weights traffic 0.4, camera 0.3, bikes 0.3 (bus 0.3 but absent unless given);
 # full changes: traffic -40%, bus -40%, camera +100%, bikes -30%.
-S = Settings(impact_weight_traffic=0.4, impact_weight_camera=0.3, impact_weight_bikes=0.3)
+S = Settings(
+    impact_weight_traffic=0.4,
+    impact_weight_bus=0.3,
+    impact_weight_camera=0.3,
+    impact_weight_bikes=0.3,
+)
 
 
 def ok(observed, baseline):
@@ -71,7 +76,7 @@ def test_low_confidence_and_missing_baselines_are_excluded_but_reported():
     assert (traffic.change_pct, traffic.sub_score) == (-25.0, 62.5)  # shown, not used
     assert res.signals["camera"].status == "no_baseline"
     # Accepting low-confidence baselines (configurable) brings traffic back in.
-    lenient = Settings(impact_min_confidence="low")
+    lenient = S.with_overrides(impact_min_confidence="low")
     assert impact_score({"traffic": SignalInput(15.0, 20.0, "low")}, lenient).score == 62.5
 
 

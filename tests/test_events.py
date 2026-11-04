@@ -421,6 +421,7 @@ def test_process_events_end_to_end(tmp_path):
         event_min_minutes=5,
         event_lookback_hours=2,
         impact_recovery_window_min=2,
+        impact_weight_traffic=0.3,
     )
     con = connect(tmp_path)
     from transit_ripple.storage import read_reference

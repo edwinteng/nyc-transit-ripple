@@ -205,7 +205,9 @@ def placebo_store(tmp_path, n_events=3):
 
 def test_placebo_detects_a_consistent_slowdown(tmp_path):
     placebo_store(tmp_path)
-    settings = S.with_overrides(eval_placebo_days_back=7, eval_control_min_distance_m=1000)
+    settings = S.with_overrides(
+        eval_placebo_days_back=7, eval_control_min_distance_m=1000, traffic_enabled=True
+    )
     sec = evaluate_placebo(connect(tmp_path), settings, T0, T0 + pd.Timedelta(days=30))
     m = {x.key: x for x in sec.metrics}
     same = m["traffic_speed_diff_same_station_pct"]

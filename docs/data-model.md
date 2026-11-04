@@ -366,9 +366,14 @@ sub_score  = clip(100 * change / full_change, 0, 100)   # change in the "worse" 
 score      = sum(w_i * sub_score_i) / sum(w_i)          # over the usable signals only
 ```
 
-Weights `IMPACT_WEIGHT_TRAFFIC` = 0.3, `IMPACT_WEIGHT_BUS` = 0.3,
-`IMPACT_WEIGHT_CAMERA` = 0.2, `IMPACT_WEIGHT_BIKES` = 0.2 (all `RIPPLE_` settings;
-M4 used 0.4 / 0.3 / 0.3 before buses existed). A change in the "better"
+Weights `IMPACT_WEIGHT_BUS` = 0.5, `IMPACT_WEIGHT_CAMERA` = 0.25,
+`IMPACT_WEIGHT_BIKES` = 0.25 and `IMPACT_WEIGHT_TRAFFIC` = 0 (all `RIPPLE_`
+settings). **Traffic speed is off by default** (`TRAFFIC_ENABLED=false`): the NYC DOT
+feed covers only about 125 highway and arterial links, is often hours behind and
+stopped updating entirely on 2026-11-02, while bus speeds measure local streets near
+far more stations (over 1,000 segments). Setting `TRAFFIC_ENABLED=true` and a
+traffic weight turns it back on. (M4 used traffic 0.4 / cameras 0.3 / bikes 0.3
+before buses existed.) A change in the "better"
 direction (faster traffic or buses, fewer people, more bikes) gives 0, not a negative
 score. A signal is **usable** only when it has an observation, a positive
 baseline, a baseline confidence of at least `IMPACT_MIN_CONFIDENCE` (`ok` = at
@@ -439,8 +444,8 @@ station when its end stop is.
 **Baseline and impact.** `bus_speed_mph` baselines are computed per segment like the
 other metrics. The surface series averages the segments near the focal stations, and
 `bus` is a fourth impact signal (speed drop vs. usual; 100 at a 40% drop,
-`IMPACT_BUS_FULL_DROP_PCT`; weight `IMPACT_WEIGHT_BUS`). Default weights are now
-traffic 0.3, bus 0.3, camera 0.2, bikes 0.2, always renormalized over the usable
+`IMPACT_BUS_FULL_DROP_PCT`; weight `IMPACT_WEIGHT_BUS`). Default weights are bus 0.5,
+camera 0.25, bikes 0.25 (traffic speed off), always renormalized over the usable
 signals. Events store `bus_n_segments`, `bus_speed_mph`, `bus_baseline_mph`,
 `bus_change_pct` and `bus_baseline_confidence`.
 

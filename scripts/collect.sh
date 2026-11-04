@@ -18,6 +18,11 @@ data_dir="${RIPPLE_DATA_DIR:-datastore}"
 polls="${POLLS:-5}"
 interval="${INTERVAL:-60}"
 end=$(( $(date +%s) + minutes * 60 ))
+# NYC DOT traffic speed is off unless RIPPLE_TRAFFIC_ENABLED=true (see config.py).
+sources="subway,bus,alerts,bikes"
+if [ "${RIPPLE_TRAFFIC_ENABLED:-false}" = "true" ]; then
+  sources="${sources},traffic"
+fi
 i=0
 failures=0
 last_maintenance=""
@@ -37,7 +42,7 @@ while :; do
   echo "::group::Iteration ${i} ($(date -u +%H:%M:%S) UTC)"
   ingested=0
   step ingest uv run --no-sync ripple ingest \
-    --sources subway,bus,alerts,traffic,bikes \
+    --sources "$sources" \
     --polls "$polls" --interval "$interval" ${SAVE_RAW:+--save-raw} \
     --report-md "${RUNNER_TEMP:-/tmp}/quality-report.md" && ingested=1
   step baselines uv run --no-sync ripple baselines

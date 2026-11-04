@@ -340,7 +340,7 @@ function renderDetail(ev, detail) {
     chartBox("Subway delay (min)", `Median train delay of the ${ev.route} line, worst direction, with the event threshold.`,
       [line("Median delay", s.delay_min, "#b91c1c"), { ...line("Event threshold", thr, "#6b7280", true), reference: true }],
       labels, { beginAtZero: true }),
-    chartBox("Nearby traffic speed (mph)", "Average speed of road links within 500 m, compared with the usual speed for this weekday and time.",
+    ev.impact_signals && !ev.impact_signals.traffic ? null : chartBox("Nearby traffic speed (mph)", "Average speed of road links within 500 m, compared with the usual speed for this weekday and time.",
       [line("Observed", s.traffic_mph, "#1d4ed8"), line("Usual", s.traffic_base_mph, "#1d4ed8", true)], labels,
       { empty: "No fresh traffic speed data near these stations." }),
     chartBox("Nearby bus speed (mph)", "Average speed of buses on route segments ending within 500 m, compared with the usual speed.",

@@ -177,7 +177,7 @@ def surface_sentence(event: dict) -> dict:
             "to compare them with usual conditions for this weekday and time."
         )
     else:
-        text = f"No fresh traffic, bus, camera or Citi Bike data was available within {radius} m."
+        text = f"No fresh street data (buses, cameras, Citi Bike) was available within {radius} m."
     return {"text": text, "metrics": s.metrics}
 
 

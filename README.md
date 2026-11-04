@@ -45,9 +45,9 @@ buses on that route are already crawling or the docks are running out.
 - **Detects subway delay events** from all eight MTA GTFS-Realtime feeds. An event
   is a line whose median train delay stays at least 5 minutes late for 5 minutes. It
   links events to MTA service alerts.
-- **Measures the street around the affected stations** within 500 m: road speeds
-  (NYC DOT), bus speeds (MTA Bus Time), Citi Bike availability, and vehicle and person
-  counts from traffic cameras (an open-source detector that keeps numbers, never
+- **Measures the street around the affected stations** within 500 m: bus speeds
+  (MTA Bus Time), Citi Bike availability, and vehicle and person counts from traffic
+  cameras (an open-source detector that keeps numbers, never
   images). Each signal is compared with the usual level for that weekday and time of
   day, giving a **0-100 surface impact score**.
 - **Recommends options** for every affected station: another line (next train from
@@ -69,7 +69,7 @@ flowchart LR
     S1["MTA subway GTFS-Realtime (8 feeds)"]
     S2["MTA service alerts"]
     S3["MTA Bus Time SIRI"]
-    S4["NYC DOT traffic speed"]
+    S4["NYC DOT traffic speed<br/>(off by default: sparse, often stale)"]
     S5["Citi Bike GBFS"]
     S6["NYC traffic cameras"]
   end
@@ -90,7 +90,7 @@ flowchart LR
   S1 --> I1
   S2 --> I1
   S3 --> I1
-  S4 --> I1
+  S4 -.-> I1
   S5 --> I1
   I1 --> I2 --> I3 --> I4 --> I5 --> I6 --> I7 --> D
   S6 --> I5
@@ -110,7 +110,8 @@ Parquet.
 ## Key engineering decisions and trade-offs
 
 **Multi-rate time alignment.** Subway feeds update every 30 seconds, Citi Bike every
-minute, DOT traffic speeds every 5 minutes (sometimes hours late), cameras only when
+minute, DOT traffic speeds every 5 minutes (sometimes hours late, so they are now off
+by default in favor of bus speeds), cameras only when
 asked, and GitHub runs the scheduler "about" every 5 minutes. Everything is bucketed
 to 1-minute UTC slots, keeping both observation and fetch times. Values are
 forward-filled only up to a per-source maximum age, with that age recorded. Past the

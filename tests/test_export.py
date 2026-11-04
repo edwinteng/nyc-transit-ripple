@@ -83,7 +83,13 @@ def exported(tmp_path):
     write_map_references(tmp_path)
     rows = line_rows("A", "S", [8, 9, 12, 11, 10, 9, 8, 2, 1])
     write_table(tmp_path, "line_minute", pd.DataFrame(rows), "r")
-    settings = Settings(data_dir=tmp_path, event_min_minutes=5, event_lookback_hours=2)
+    settings = Settings(
+        data_dir=tmp_path,
+        traffic_enabled=True,
+        impact_weight_traffic=0.3,
+        event_min_minutes=5,
+        event_lookback_hours=2,
+    )
     baselines = read_reference(tmp_path, "baselines")
     now = (T0 + pd.Timedelta(minutes=9)).to_pydatetime()
     events = process_events(connect(tmp_path), settings, baselines, now, "run1")
@@ -345,7 +351,11 @@ def test_replay_data_and_notable_events(tmp_path):
     rows = line_rows("A", "S", [8, 9, 12, 11, 10, 9, 8, 2, 1])
     write_table(tmp_path, "line_minute", pd.DataFrame(rows), "r")
     settings = Settings(
-        data_dir=tmp_path, event_min_minutes=5, event_lookback_hours=2, notable_min_duration_min=5
+        data_dir=tmp_path,
+        impact_weight_traffic=0.3,
+        event_min_minutes=5,
+        event_lookback_hours=2,
+        notable_min_duration_min=5,
     )
     baselines = read_reference(tmp_path, "baselines")
     now = (T0 + pd.Timedelta(minutes=9)).to_pydatetime()
@@ -393,3 +403,19 @@ def test_replay_data_and_notable_events(tmp_path):
     assert all(len(v) == n for v in detail["station_series"].values())
     assert max(v for v in detail["station_series"]["A41"] if v is not None) == 12.0
     assert len(detail["recommendation_history"]) == 2
+
+
+def test_traffic_speed_is_off_by_default(tmp_path):
+    """Traffic speed is not collected, scored or shown unless switched on."""
+    settings = Settings(data_dir=tmp_path)
+    assert not settings.traffic_enabled and settings.impact_weight_traffic == 0.0
+    sources = {
+        s["source"] for s in build_status(connect(tmp_path), settings, pd.Timestamp(T0))["sources"]
+    }
+    assert "traffic" not in sources and "bus" in sources
+    from transit_ripple.export import _signals
+
+    detail = json.dumps(
+        {"signals": {"traffic": {"status": "zero_weight"}, "bus": {"status": "used"}}}
+    )
+    assert set(_signals(detail)) == {"bus"}

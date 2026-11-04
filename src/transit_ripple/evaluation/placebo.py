@@ -241,6 +241,8 @@ def evaluate_placebo(con, settings: Settings, start, end) -> Section:
     rng = np.random.default_rng(settings.eval_seed)
     all_rows, findings = [], []
     for signal, spec in SIGNALS.items():
+        if signal == "traffic_speed" and not settings.traffic_enabled:
+            continue
         rows = event_differences(con, settings, events.assign(), stations, signal, rng)
         rows = [r for r in rows if r["event_id"] in set(in_window["event_id"])]
         all_rows += rows

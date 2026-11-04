@@ -37,7 +37,7 @@ incident handling see the [runbook](runbook.md).
 - **Surface impact score (0-100)** from (a) the drop of nearby traffic speed, (b)
   the increase of camera counts of vehicles and people and (c) the drop of Citi
   Bike availability, each relative to the same weekday and time of day.
-  Configurable weights (0.4 / 0.3 / 0.3; with buses since M5: 0.3 / 0.3 / 0.2 / 0.2) are renormalized over the signals that
+  Configurable weights (0.4 / 0.3 / 0.3 in M4; now bus 0.5, cameras 0.25, bikes 0.25 with traffic speed off) are renormalized over the signals that
   have data and a reliable baseline, and the signals used are stored with the
   score. Missing everything gives "not enough data", never 0. The time the
   surface recovered is detected from the per-minute score.
@@ -286,7 +286,8 @@ Impact score and cameras (M4; the formula is in
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `IMPACT_WEIGHT_TRAFFIC`, `_BUS`, `_CAMERA`, `_BIKES` | 0.3, 0.3, 0.2, 0.2 | Signal weights, renormalized over usable signals |
+| `IMPACT_WEIGHT_BUS`, `_CAMERA`, `_BIKES`, `_TRAFFIC` | 0.5, 0.25, 0.25, 0 | Signal weights, renormalized over usable signals |
+| `TRAFFIC_ENABLED` | `false` | Collect and use NYC DOT traffic speed (off: the feed is sparse and unreliable) |
 | `IMPACT_TRAFFIC_FULL_DROP_PCT` | 40 | Traffic speed drop vs. usual that scores 100 |
 | `IMPACT_CAMERA_FULL_INCREASE_PCT` | 100 | Camera count increase that scores 100 |
 | `IMPACT_BIKES_FULL_DROP_PCT` | 30 | Citi Bike availability drop that scores 100 |
