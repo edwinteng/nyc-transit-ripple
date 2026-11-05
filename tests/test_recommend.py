@@ -72,6 +72,14 @@ def test_recovery_falls_back_to_broader_groups_with_low_confidence():
     assert empty.duration.confidence == "none" and empty.remaining_median_min is None
 
 
+def test_no_remaining_estimate_once_longer_than_similar_events():
+    rows = [("A", "am_peak", None, d, None) for d in (10, 12, 14, 16, 60)]
+    model = RecoveryModel(history(rows), S)
+    est = model.estimate("A", NOW, None, elapsed_min=20)  # only 1 past event lasted longer
+    assert est.remaining_median_min is None and est.remaining_p75_min is None
+    assert est.duration.median_min == 14.0 and est.duration.confidence == "low"
+
+
 def test_history_frame_from_events():
     ev = pd.DataFrame(
         {
@@ -381,3 +389,16 @@ def test_walking_and_riding_times():
     assert walk_minutes(600, S) == pytest.approx(600 * 1.3 / 1.3 / 60)
     assert ride_minutes(8.0, S) == pytest.approx(4000 / (8 * 0.44704) / 60)
     assert ride_minutes(0, S) is None
+
+
+def test_wait_text_when_the_delay_outlasts_its_history(tmp_path):
+    from transit_ripple.recommend import Option, option_text
+
+    o = Option("wait", "wait:F", None, None, ["F"], 0.0, None, 8.8, 8.8, "low")
+    o.facts = {"estimate": {"duration": {"n_events": 29, "median_min": 13.0, "group": "all lines"}}}
+    txt = option_text(o, S, {})
+    assert (
+        "already lasted longer than most similar past delays (median 13 min; 29 past" in txt["text"]
+    )
+    assert "0 more min" not in txt["text"] and "About" not in txt["text"]  # no total time
+    assert uncited_numbers(txt["text"], txt["metrics"]) == []
