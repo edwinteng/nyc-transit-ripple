@@ -128,15 +128,30 @@ jobs:
               age = time.time() - feed.header.timestamp
               print(f"  entities: {len(feed.entity)}; header age {age:.0f} s")
 
-          # Structure of real vehicle records (public data, no key) to check the parser.
-          import json as _json
-          for ver in ("2", "1"):
-              r = requests.get("https://bustime.mta.info/api/siri/vehicle-monitoring.json",
-                               params={"key": key, "version": ver, "LineRef": "MTA NYCT_B63",
-                                       "VehicleMonitoringDetailLevel": "normal"}, timeout=30)
-              acts = r.json()["Siri"]["ServiceDelivery"]["VehicleMonitoringDelivery"][0].get("VehicleActivity", [])
-              print(f"--- version {ver}: {len(acts)} activities; first record:")
-              print(_json.dumps(acts[0] if acts else {}, indent=1)[:3500].replace(key, "***"))
+          # Size and reliability of the all-bus response by detail level (no key printed).
+          import gzip as _gz, time as _t
+          for level in ("normal", "minimum"):
+              for attempt in range(3):
+                  t0 = _t.time()
+                  try:
+                      r = requests.get("https://bustime.mta.info/api/siri/vehicle-monitoring.json",
+                                       params={"key": key, "VehicleMonitoringDetailLevel": level},
+                                       timeout=60, headers={"Accept-Encoding": "gzip"})
+                      acts = r.json()["Siri"]["ServiceDelivery"]["VehicleMonitoringDelivery"][0].get("VehicleActivity", [])
+                      a0 = acts[0]["MonitoredVehicleJourney"] if acts else {}
+                      has_d = "Extensions" in (a0.get("MonitoredCall") or {})
+                      print(f"{level} try {attempt}: HTTP {r.status_code}, {len(r.content)/1e6:.1f} MB, "
+                            f"enc={r.headers.get('Content-Encoding')}, {len(acts)} vehicles, distances={has_d}, {_t.time()-t0:.1f}s")
+                  except Exception as exc:
+                      print(f"{level} try {attempt}: FAILED {type(exc).__name__} after {_t.time()-t0:.1f}s")
+          for op in ("MTA NYCT", "MTABC", "MTA"):
+              try:
+                  r = requests.get("https://bustime.mta.info/api/siri/vehicle-monitoring.json",
+                                   params={"key": key, "OperatorRef": op}, timeout=60)
+                  acts = r.json()["Siri"]["ServiceDelivery"]["VehicleMonitoringDelivery"][0].get("VehicleActivity", [])
+                  print(f"OperatorRef={op}: HTTP {r.status_code}, {len(r.content)/1e6:.1f} MB, {len(acts)} vehicles")
+              except Exception as exc:
+                  print(f"OperatorRef={op}: FAILED {type(exc).__name__}")
           print("RESULT:", "key works" if ok else "key check FAILED")
           sys.exit(0 if ok else 1)
           PY
