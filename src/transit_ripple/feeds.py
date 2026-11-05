@@ -61,6 +61,14 @@ def mta_headers(settings: Settings) -> dict[str, str]:
     return {"x-api-key": settings.mta_api_key} if settings.mta_api_key else {}
 
 
+# The response body was cut off mid-transfer. urllib3's Retry covers connection
+# errors and status codes but not a broken body, so these are retried here.
+BROKEN_TRANSFER_ERRORS = (
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.ContentDecodingError,
+)
+
+
 def fetch_url(
     source: str,
     url: str,
@@ -68,27 +76,55 @@ def fetch_url(
     timeout: float,
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
+    transfer_retries: int = 2,
+    retry_pause_s: float = 2.0,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> FetchResult:
-    """GET a URL and wrap the outcome; errors never raise and never include headers."""
+    """GET a URL and wrap the outcome; errors never raise and never include headers.
+
+    A transfer that breaks off mid-body is retried up to ``transfer_retries`` times
+    after a short pause (large feeds such as MTA Bus Time are sometimes cut off)."""
     start = time.time()
-    try:
-        resp = session.get(url, timeout=timeout, headers=headers or None, params=params)
-        now = time.time()
-        if resp.status_code != 200:
+    attempt = 0
+    while True:
+        try:
+            resp = session.get(url, timeout=timeout, headers=headers or None, params=params)
+            now = time.time()
+            if resp.status_code != 200:
+                return FetchResult(
+                    source,
+                    url,
+                    now,
+                    None,
+                    http_status=resp.status_code,
+                    error=f"HTTP {resp.status_code}",
+                    elapsed_s=now - start,
+                )
             return FetchResult(
-                source,
-                url,
-                now,
-                None,
-                http_status=resp.status_code,
-                error=f"HTTP {resp.status_code}",
-                elapsed_s=now - start,
+                source, url, now, resp.content, http_status=200, elapsed_s=now - start
             )
-        return FetchResult(source, url, now, resp.content, http_status=200, elapsed_s=now - start)
-    except requests.RequestException as exc:
-        now = time.time()
-        # Keep the message short and free of request headers.
-        return FetchResult(source, url, now, None, error=type(exc).__name__, elapsed_s=now - start)
+        except BROKEN_TRANSFER_ERRORS as exc:
+            if attempt < transfer_retries:
+                attempt += 1
+                log.info(
+                    "%s: %s, retrying (%d/%d)",
+                    source,
+                    type(exc).__name__,
+                    attempt,
+                    transfer_retries,
+                )
+                sleep(retry_pause_s)
+                continue
+            now = time.time()
+            return FetchResult(
+                source, url, now, None, error=type(exc).__name__, elapsed_s=now - start
+            )
+        except requests.RequestException as exc:
+            now = time.time()
+            # Keep the message short and free of request headers.
+            return FetchResult(
+                source, url, now, None, error=type(exc).__name__, elapsed_s=now - start
+            )
 
 
 def fetch_one(

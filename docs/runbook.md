@@ -73,6 +73,13 @@ usual or assumed speeds with low confidence.
 4. Bus Time asks clients not to poll more than once every 30 seconds; the pipeline
    enforces this (`RIPPLE_BUS_MIN_REQUEST_INTERVAL_S`). Do not lower it.
 
+**Occasional `bus | outage (ChunkedEncodingError)`.** The all-bus response is 3-5 MB
+at daytime and is sometimes cut off mid-transfer. `fetch_url` retries such broken
+transfers twice after a 2-second pause, so isolated failures are expected and
+harmless. Investigate only if most polls in an hour fail (check `quality_source`
+on the data branch). Low bus record counts between about 1 and 5 am New York time
+are normal: few buses run then.
+
 ## Scheduled workflows are paused or never start
 
 **Paused for inactivity.** GitHub disables scheduled workflows in public
