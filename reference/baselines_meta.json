@@ -1,0 +1,8 @@
+{
+  "computed_utc": "2026-11-07T12:30:48.827515",
+  "rows": 2613788,
+  "baseline_days": 28,
+  "slot_min": 30,
+  "min_days_for_ok": 3,
+  "exclude_recent_hours": 3.0
+}

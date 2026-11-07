@@ -1,0 +1,7 @@
+# Only aggregates are versioned here; details go to workflow artifacts.
+stop_delays/
+reports/
+raw/
+static/
+site/
+*.tmp
