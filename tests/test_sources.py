@@ -561,3 +561,59 @@ def test_bikes_discovery_failure_uses_cache_or_reports_outage(tmp_path):
     assert by_source["bike_discovery"].notes == {"using_cached_discovery": True}
     assert by_source["bike_status"].status == q.STATUS_OK
     assert len(out.tables["bike_minute"]) == 1
+
+
+# --- fetch_url: retry of transfers cut off mid-body ---------------------------
+
+
+class _FlakySession:
+    """Fake session: raises the given errors in order, then returns 200."""
+
+    def __init__(self, errors):
+        self.errors = list(errors)
+        self.calls = 0
+
+    def get(self, url, **kwargs):
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+
+        class _Resp:
+            status_code = 200
+            content = b"payload"
+
+        return _Resp()
+
+
+def test_fetch_url_retries_broken_transfer():
+    import requests
+
+    from transit_ripple.feeds import fetch_url
+
+    pauses = []
+    session = _FlakySession([requests.exceptions.ChunkedEncodingError("cut off")])
+    res = fetch_url("bus", "https://example.test/x", session, 5, sleep=pauses.append)
+    assert res.ok and res.content == b"payload"
+    assert session.calls == 2 and pauses == [2.0]
+
+
+def test_fetch_url_gives_up_after_retries():
+    import requests
+
+    from transit_ripple.feeds import fetch_url
+
+    errs = [requests.exceptions.ChunkedEncodingError("cut off")] * 3
+    session = _FlakySession(errs)
+    res = fetch_url("bus", "https://example.test/x", session, 5, sleep=lambda s: None)
+    assert not res.ok and res.error == "ChunkedEncodingError"
+    assert session.calls == 3
+
+
+def test_fetch_url_does_not_retry_other_errors():
+    import requests
+
+    from transit_ripple.feeds import fetch_url
+
+    session = _FlakySession([requests.exceptions.ReadTimeout("slow")])
+    res = fetch_url("bus", "https://example.test/x", session, 5, sleep=lambda s: None)
+    assert not res.ok and res.error == "ReadTimeout" and session.calls == 1
